@@ -275,45 +275,51 @@ if __name__ == "__main__":
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=30, azim=30)
 
-    # for i in range(1000):
-    # Fit the 3D catenary network and sample points
-    time_start = time.time()
-    catenary_network_params = build_catenary_network(points, connections, parallelize=False, Ls=Ls, num_samples=5, guess=initial_guess)
-    print("Time elapsed for fitting the curves:", time.time() - time_start)
+    for i in range(1000):
+        # Fit the 3D catenary network and sample points
+        time_start = time.time()
+        catenary_network_params = build_catenary_network(points, connections, parallelize=False, Ls=Ls, num_samples=5, guess=initial_guess)
+        ax.clear()
+        print("Time elapsed for fitting the curves:", time.time() - time_start)
+        initial_guess = [catenary_network_params[i][:3] for i in range(len(connections))]
 
-    for i, connection in enumerate(connections):
-        # Retrieve curve parameters and sampled points
-        p1, p2 = points[connection[0], :], points[connection[1], :]
-        c, x0, z0, length, rotation, translation, sampled_points = catenary_network_params[i]
+        for i, connection in enumerate(connections):
+            # Retrieve curve parameters and sampled points
+            p1, p2 = points[connection[0], :], points[connection[1], :]
+            c, x0, z0, length, rotation, translation, sampled_points = catenary_network_params[i]
 
-        # Plot the full catenary curve with transparency (alpha=0.5)
-        x_full = np.linspace(0, length, 100)  # High-resolution sampling
-        z_full = c * np.cosh((x_full - x0) / c) + z0
-        y_full = np.zeros_like(x_full)
-        full_curve_local = np.vstack((x_full, y_full, z_full)).T
-        full_curve_global = rotation.inv().apply(full_curve_local) + translation
-        ax.plot(
-            full_curve_global[:, 0],
-            full_curve_global[:, 1],
-            full_curve_global[:, 2],
-            color="blue",
-            alpha=0.5,
-            label=f"Curve {i}"
-        )
+            # Plot the full catenary curve with transparency (alpha=0.5)
+            x_full = np.linspace(0, length, 100)  # High-resolution sampling
+            z_full = c * np.cosh((x_full - x0) / c) + z0
+            y_full = np.zeros_like(x_full)
+            full_curve_local = np.vstack((x_full, y_full, z_full)).T
+            full_curve_global = rotation.inv().apply(full_curve_local) + translation
 
-        # Plot the sampled points on the curve
-        ax.scatter(
-            sampled_points[:, 0],
-            sampled_points[:, 1],
-            sampled_points[:, 2],
-            color="black",
-            label=f"Sampled Points {i}"
-        )
+            ax.plot(
+                full_curve_global[:, 0],
+                full_curve_global[:, 1],
+                full_curve_global[:, 2],
+                color="blue",
+                alpha=0.5,
+                label=f"Curve {i}"
+            )
 
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Z")
-    ax.set_title("3D Catenary Curve Fitting with Sampled Points and Transparent Curves")
-    # plt.legend()
-    plt.show()
+            # Plot the sampled points on the curve
+            ax.scatter(
+                sampled_points[:, 0],
+                sampled_points[:, 1],
+                sampled_points[:, 2],
+                color="black",
+                label=f"Sampled Points {i}"
+            )
 
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+        ax.set_title("3D Catenary Curve Fitting with Sampled Points and Transparent Curves")
+        # plt.legend()
+
+        # plt.show()
+        # plt.draw()
+        plt.pause(0.0001)
+        points += np.random.normal(loc=0.0, scale=0.002, size=points.shape)
