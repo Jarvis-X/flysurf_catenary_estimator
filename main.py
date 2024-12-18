@@ -1,3 +1,18 @@
+"""
+Usage: for running an example, change
+    points = np.array([[0.32, 0.3, 0.2],
+                       [-0.3, 0.31, -0.01],
+                       [-0.29, -0.3, -0.1],
+                       [0.3, -0.28, 0.05],
+                       [0.01, -0.02, -0.1]])
+
+    connections = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 4], [2, 4], [3, 4]]
+    Ls = [1, 1, 1, 1, 0.7, 0.7, 0.7, 0.7]
+    in the main function.
+
+    To check the implementation details, check the function `build_catenary_network`
+"""
+
 import numpy as np
 from scipy.optimize import minimize
 from scipy.integrate import quad
@@ -8,7 +23,7 @@ from joblib import Parallel, delayed
 import time
 from scipy.optimize import root_scalar
 import matplotlib
-# matplotlib.use('qtagg')
+# matplotlib.use('tkagg')
 
 
 # Functions
@@ -191,17 +206,32 @@ def sampling_3d_catenary_points(c, x0, z0, length, rotation, translation, x1, x2
     return points_global
 
 
-def build_catenary_network(points, connections, parallelize=True, Ls=None, num_samples=5):
+def build_catenary_network(points, connections, parallelize=False, Ls=None, num_samples=5, guess=None):
     """
-    Build a catenary network using parallelized fitting and sample equally spaced points on each curve.
+    Build a catenary network using fitting and sample equally spaced points on each curve.
+    With small numbers of points and num_samples, it is NOT worth it enabling parallelize = True.
+    :param points: quadrotor positions in the world frame
+    :param connections: which quadrotors are connected by catenary curves
+    :param parallelize: option to enable parallel computation
+    :param Ls: curve lengths of the catenary curves
+    :param num_samples: number of equally spaced samples on each catenary curve
+    :return: list([c, x0, z0, length, rotation, translation, sampled_points])
+        for each element in the list
+        c, x0, z0: catenary parameters in its local 2D frame
+        length: distance between the two endpoints
+        rotation, translation: transformation from the local 2D frame to the world frame
+        sampled_points: equally spaced sample points on the catenary curve in the world frame.
     """
     estimate_L = (Ls is None)
 
-    def process_connection(i, connection):
+    def process_connection(i, connection, guess=guess):
         p1, p2 = points[connection[0], :], points[connection[1], :]
 
         # Guess initial parameters
-        initial_guess = [0.5, (p1[0] + p2[0]) / 2, (p1[2] + p2[2]) / 2]
+        if guess:
+            initial_guess = guess[i]
+        else:
+            initial_guess = [0.5, (p1[0] + p2[0]) / 2, (p1[2] + p2[2]) / 2]
 
         # Estimate or use provided cable length
         l = np.linalg.norm(p2 - p1) * 1.5 if estimate_L else Ls[i]
@@ -215,36 +245,41 @@ def build_catenary_network(points, connections, parallelize=True, Ls=None, num_s
     # Parallelize the fitting process
     if parallelize:
         catenary_network_params = Parallel(n_jobs=-1)(
-            delayed(process_connection)(i, connection) for i, connection in enumerate(connections)
+            delayed(process_connection)(i, connection, guess) for i, connection in enumerate(connections)
         )
     else:
-        catenary_network_params = [process_connection(i, connection) for i, connection in enumerate(connections)]
+        catenary_network_params = [process_connection(i, connection, guess) for i, connection in enumerate(connections)]
 
     return catenary_network_params
 
 
-# Example Usage
-# Updated visualization within the main script
 if __name__ == "__main__":
     # Quadrotor positions in 3D
-    points = np.array([[0.32, 0.3, 0.2],
-                       [-0.3, 0.31, -0.01],
-                       [-0.29, -0.3, -0.1],
-                       [0.3, -0.28, 0.05],
-                       [0.01, -0.02, -0.1]])
+    points = np.array([[0.32, 0.3, 0.2],        # 0
+                       [-0.3, 0.31, -0.01],     # 1
+                       [-0.29, -0.3, -0.1],     # 2
+                       [0.3, -0.28, 0.05],      # 3
+                       [0.01, -0.02, -0.1]])    # 4
 
+    # which quadrotors are connected, in terms of their indices
     connections = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 4], [2, 4], [3, 4]]
+
+    # the lengths of the connections
     Ls = [1, 1, 1, 1, 0.7, 0.7, 0.7, 0.7]
 
-    # Fit the 3D catenary network and sample points
-    time_start = time.time()
-    catenary_network_params = build_catenary_network(points, connections, parallelize=False, Ls=Ls, num_samples=5)
-    print("Time elapsed for fitting the curves:", time.time() - time_start)
+    # get some initial guesses
+    initial_guess = None  # [0.5, (p1[0] + p2[0]) / 2, (p1[2] + p2[2]) / 2]
 
     # Visualize the catenary curves and sampled points
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=30, azim=30)
+
+    # for i in range(1000):
+    # Fit the 3D catenary network and sample points
+    time_start = time.time()
+    catenary_network_params = build_catenary_network(points, connections, parallelize=False, Ls=Ls, num_samples=5, guess=initial_guess)
+    print("Time elapsed for fitting the curves:", time.time() - time_start)
 
     for i, connection in enumerate(connections):
         # Retrieve curve parameters and sampled points
