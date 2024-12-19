@@ -23,6 +23,7 @@ from joblib import Parallel, delayed
 import time
 from scipy.optimize import root_scalar
 import matplotlib
+from scipy.spatial import distance
 # matplotlib.use('tkagg')
 
 
@@ -345,25 +346,79 @@ class CatenaryNetwork:
         return catenary_network_params
 
 
+def average_hausdorff_distance(points_a: np.ndarray, points_b: np.ndarray) -> float:
+    """
+    Computes the average Hausdorff distance between two sets of 3D points.
+
+    Parameters:
+        points_a (np.ndarray): An ndarray of shape (N, 3) representing the first set of 3D points.
+        points_b (np.ndarray): An ndarray of shape (M, 3) representing the second set of 3D points.
+
+    Returns:
+        float: The average Hausdorff distance between the two sets of points.
+    """
+    if points_a.shape[1] != 3 or points_b.shape[1] != 3:
+        raise ValueError("Both input arrays must have 3 columns representing 3D points.")
+
+    # Compute pairwise distances
+    d_matrix = distance.cdist(points_a, points_b)
+
+    # Compute directed distances
+    d_ab = np.mean(np.min(d_matrix, axis=1))  # Average of minimum distances from A to B
+    d_ba = np.mean(np.min(d_matrix, axis=0))  # Average of minimum distances from B to A
+
+    # Average Hausdorff distance
+    return (d_ab + d_ba) / 2
+
+
+def generate_mesh_intersections(x0, y0, z0, size=9, spacing=1.0):
+    """
+    Generate a 3D mesh of intersection points centered at (x0, y0, z0).
+
+    Parameters:
+        x0 (float): x-coordinate of the mesh center.
+        y0 (float): y-coordinate of the mesh center.
+        z0 (float): z-coordinate of the mesh center.
+        size (int): Number of points along each dimension (default 9x9 grid).
+        spacing (float): Distance between adjacent points (default 1.0).
+
+    Returns:
+        np.ndarray: Array of shape (size*size, 3) representing mesh intersection points.
+    """
+    if size % 2 == 0:
+        raise ValueError("Size must be an odd number to center the grid at (x0, y0, z0).")
+
+    half_size = size // 2
+    x_coords = np.linspace(x0 - half_size * spacing, x0 + half_size * spacing, size)
+    y_coords = np.linspace(y0 - half_size * spacing, y0 + half_size * spacing, size)
+
+    # Create the grid
+    xv, yv = np.meshgrid(x_coords, y_coords)
+    zv = np.full_like(xv, z0)  # Add z-coordinate
+    intersections = np.column_stack((xv.ravel(), yv.ravel(), zv.ravel()))
+    return intersections
+
+
 if __name__ == "__main__":
     """ Desired mesh, defined by the quadrotor positions """
-    desired_points = np.array([[0.49, 0.51, 0.03],  # 0
-                               [-0.5, 0.5, 0.02],  # 1
-                               [-0.5, -0.5, 0.0],  # 2
-                               [0.5, -0.5, -0.01],  # 3
-                               [0.0, 0.0, 0.01]])  # 4
-
-    # which quadrotors are connected, in terms of their indices
-    desired_connections = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 4], [2, 4], [3, 4]]
-
-    # the lengths of the connections
-    desired_Ls = [1.0, 1.0, 1.0, 1.0, 0.707, 0.71, 0.71, 0.71]
-
-    # get some initial guesses
-    initial_guess = None
-
-    desired_catenary_network = CatenaryNetwork(desired_points, desired_connections, desired_Ls)
-    desired_sample_positions = desired_catenary_network.get_samples()
+    # desired_points = np.array([[0.49, 0.51, 0.03],  # 0
+    #                            [-0.5, 0.5, 0.02],  # 1
+    #                            [-0.5, -0.5, 0.0],  # 2
+    #                            [0.5, -0.5, -0.01],  # 3
+    #                            [0.0, 0.0, 0.01]])  # 4
+    #
+    # # which quadrotors are connected, in terms of their indices
+    # desired_connections = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 4], [2, 4], [3, 4]]
+    #
+    # # the lengths of the connections
+    # desired_Ls = [1.0, 1.0, 1.0, 1.0, 0.707, 0.71, 0.71, 0.71]
+    #
+    # # get some initial guesses
+    # initial_guess = None
+    #
+    # desired_catenary_network = CatenaryNetwork(desired_points, desired_connections, desired_Ls)
+    # desired_sample_positions = desired_catenary_network.get_samples()
+    desired_mesh = generate_mesh_intersections(1, 1, 0.5, size=9, spacing=0.125)
 
     """ Current quadrotor positions """
     points = np.array([[0.32, 0.3, 0.2],        # 0
@@ -386,12 +441,16 @@ if __name__ == "__main__":
     for i in range(1000):
         # Fit the 3D catenary network and sample points
         catenary_network.visualize()
-        desired_catenary_network.visualize(catenary_network.ax, color_curve="red", color_point="black")
+        catenary_network.ax.scatter(desired_mesh[:, 0],
+                                    desired_mesh[:, 1],
+                                    desired_mesh[:, 2],
+                                    color="red")
+        # desired_catenary_network.visualize(catenary_network.ax, color_curve="red", color_point="black")
         plt.pause(0.0001)
         time_start = time.time()
         catenary_network.update(points)
         sample_points = catenary_network.get_samples()
-        print("error", np.mean(desired_sample_positions - sample_points))
-        print("Time elapsed for fitting the curves:", time.time() - time_start)
+        print("error", average_hausdorff_distance(desired_mesh, sample_points))
+        print("Time elapsed for fitting the curves and calculating the error:", time.time() - time_start)
         points += np.random.normal(loc=0.0, scale=0.005, size=points.shape)
         catenary_network.ax.clear()
