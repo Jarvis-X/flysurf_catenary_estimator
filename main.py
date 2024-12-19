@@ -85,7 +85,7 @@ class CatenaryNetwork:
             if ax is None:
                 self.fig = plt.figure()
                 self.ax = self.fig.add_subplot(111, projection='3d')
-                self.ax.view_init(elev=30, azim=30)
+                self.ax.view_init(elev=90, azim=0)
                 self.ax.set_xlabel("X")
                 self.ax.set_ylabel("Y")
                 self.ax.set_zlabel("Z")
@@ -303,45 +303,71 @@ class CatenaryNetwork:
         points_global = rotation.inv().apply(points_local) + translation
         return points_global
 
-
     def _build_catenary_network(self, points, parallelize=False):
         """
         Build a catenary network using fitting and sample equally spaced points on each curve.
-        With small numbers of points and num_samples, it is NOT worth it enabling parallelize = True.
-        :param points: quadrotor positions in the world frame
-        :param connections: which quadrotors are connected by catenary curves
-        :param parallelize: option to enable parallel computation
-        :param Ls: curve lengths of the catenary curves
-        :param num_samples: number of equally spaced samples on each catenary curve
-        :return: list([c, x0, z0, length, rotation, translation, sampled_points])
-            for each element in the list
-            c, x0, z0: catenary parameters in its local 2D frame
-            length: distance between the two endpoints
-            rotation, translation: transformation from the local 2D frame to the world frame
-            sampled_points: equally spaced sample points on the catenary curve in the world frame.
+        Perform batch operations to compute catenary parameters and sampled points efficiently.
         """
-        estimate_L = (self.lengths is None)
+        num_connections = len(self.connections)
+        num_samples = self.num_samples
+        samples_per_connection = np.zeros((num_connections, num_samples, 3))
 
-        def process_connection(i, connection, guess):
-            p1, p2 = points[connection[0], :], points[connection[1], :]
+        # Step 1: Transform to local frames for all connections
+        rotations = []
+        translations = []
+        local_frames = []
+        lengths = []
+        for connection in self.connections:
+            p1, p2 = points[connection[0]], points[connection[1]]
+            rotation, translation, p1_local, p2_local, length = self._transform_to_local_frame(p1, p2)
+            rotations.append(rotation)
+            translations.append(translation)
+            local_frames.append((p1_local, p2_local))
+            lengths.append(length)
 
-            # Estimate or use provided cable length
-            l = np.linalg.norm(p2 - p1) * 1.5 if estimate_L else self.lengths[i]
+        # Step 2: Optimize catenary parameters for all connections
+        catenary_params = []
+        for i, (p1_local, p2_local) in enumerate(local_frames):
+            x1, z1 = p1_local[0], p1_local[2]
+            x2, z2 = p2_local[0], p2_local[2]
+            length = self.lengths[i] if self.lengths is not None else np.linalg.norm(
+                points[self.connections[i][1]] - points[self.connections[i][0]])
 
-            c, x0, z0, length, rotation, translation = self._fit_3d_catenary(p1, p2, l, self.guess[i])
-
-            # Sample equally spaced points along the curve
-            sampled_points = self._sampling_3d_catenary_points(c, x0, z0, length, rotation, translation, 0, length, self.num_samples)
-
-            return c, x0, z0, length, rotation, translation, sampled_points
-
-        # Parallelize the fitting process
-        if parallelize:
-            catenary_network_params = Parallel(n_jobs=-1)(
-                delayed(process_connection)(i, connection, self.guess) for i, connection in enumerate(self.connections)
+            # Perform optimization
+            result = minimize(
+                self._objective_with_gradient,
+                self.guess[i],
+                args=(x1, z1, x2, z2, length),
+                bounds=[(1e-2, None), (None, None), (None, None)],  # Ensure c > 0
+                method='L-BFGS-B',
+                jac=True,
+                options={"maxiter": 1000, "disp": False},
             )
-        else:
-            catenary_network_params = [process_connection(i, connection, self.guess) for i, connection in enumerate(self.connections)]
+            catenary_params.append(result.x)  # Append optimized [c, x0, z0]
+
+        # Step 3: Sample points on catenary curves for all connections
+        for i, (c_params, rotation, translation, (p1_local, p2_local)) in enumerate(
+                zip(catenary_params, rotations, translations, local_frames)):
+            c, x0, z0 = c_params
+            x1, x2 = p1_local[0], p2_local[0]
+
+            # Compute sampled points in local frame
+            total_arc_length = self._compute_exact_arc_length(c, x0, x1, x2)
+            arc_lengths = np.linspace(0, total_arc_length, num_samples)
+            x_samples = [self._invert_arc_length(s, c, x0, x1, x2) for s in arc_lengths]
+            z_samples = c * np.cosh((np.array(x_samples) - x0) / c) + z0
+            local_points = np.array([x_samples, np.zeros_like(x_samples), z_samples]).T
+
+            # Transform sampled points back to global frame
+            global_points = rotation.inv().apply(local_points) + translation
+            samples_per_connection[i] = global_points
+
+        # Combine results into a structured output
+        catenary_network_params = [
+            (
+            c_params[0], c_params[1], c_params[2], lengths[i], rotations[i], translations[i], samples_per_connection[i])
+            for i, c_params in enumerate(catenary_params)
+        ]
 
         return catenary_network_params
 
@@ -418,7 +444,7 @@ if __name__ == "__main__":
     #
     # desired_catenary_network = CatenaryNetwork(desired_points, desired_connections, desired_Ls)
     # desired_sample_positions = desired_catenary_network.get_samples()
-    desired_mesh = generate_mesh_intersections(1, 1, 0.5, size=9, spacing=0.125)
+    desired_mesh = generate_mesh_intersections(0, 0, 0.0, size=9, spacing=0.125)
 
     """ Current quadrotor positions """
     points = np.array([[0.32, 0.3, 0.2],        # 0
