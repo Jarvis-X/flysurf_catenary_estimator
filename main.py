@@ -14,7 +14,7 @@ Usage: for running an example, change
 """
 
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import minimize, least_squares
 from scipy.integrate import quad
 from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
@@ -25,10 +25,14 @@ from scipy.optimize import root_scalar
 import matplotlib
 from scipy.spatial import distance
 # matplotlib.use('tkagg')
+plt.rc('font', family='serif')
+matplotlib.rcParams['pdf.fonttype'] = 42
+matplotlib.rcParams['ps.fonttype'] = 42
+from scipy.spatial import Delaunay
 
 
 class CatenaryNetwork:
-    def __init__(self, points, connections, lengths, num_samples=5, initial_guess=None, instant_update=True, visualized=False):
+    def __init__(self, points, connections, lengths, surfaces, num_samples=5, initial_guess=None, instant_update=True, visualized=False):
         self.points = points
         self.connections = connections
         self.lengths = lengths
@@ -44,6 +48,8 @@ class CatenaryNetwork:
         self._updated = False
         self.samples = np.zeros((self.num_samples*len(connections), 3))
         self.catenary_network_params = None
+        self.surfaces = surfaces
+        self.surface_params = [[1.0, 0., 0., 0.,] for _ in self.surfaces]
         self.visualized = visualized
         if self.visualized:
             self.fig = plt.figure()
@@ -58,6 +64,7 @@ class CatenaryNetwork:
             self.catenary_network_params = self._build_catenary_network(self.points, parallelize=False)
             for i, catenary_param in enumerate(self.catenary_network_params):
                 self.samples[i*self.num_samples:(i+1)*self.num_samples, :] = catenary_param[6]
+
 
     def update(self, points):
         self._updated = False
@@ -79,13 +86,42 @@ class CatenaryNetwork:
         self._updated = True
         return np.array(self.samples)
 
+
+    def get_surfaces(self):
+        # Define the 3D catenary surface equation
+        sample_points = self.get_samples()
+
+        # for estimating the surface
+        for i, surface in enumerate(self.surfaces):
+            surface_points = np.zeros((len(surface)*num_samples, 3))
+            for j, curve_id in enumerate(surface):
+                surface_points[j*num_samples:(j+1)*num_samples, :] = sample_points[curve_id*num_samples:(curve_id + 1)*num_samples, :]
+
+            initial_guess = self.surface_params[i]
+            x = surface_points[:, 0]
+            y = surface_points[:, 1]
+            z = surface_points[:, 2]
+            result = least_squares(self._residuals, initial_guess, args=(x, y, z))
+            self.surface_params[i] = result.x
+
+        return self.surface_params
+
+    def _catenary_surface(self, params, x, y):
+        a, x0, y0, z0 = params
+        return z0 + a * np.cosh(np.sqrt((x - x0) ** 2 + (y - y0) ** 2) / a)
+
+    # Define the residual function for least squares
+    def _residuals(self, params, x, y, z):
+        return z - self._catenary_surface(params, x, y)
+
+
     def visualize(self, ax=None, color_curve="blue", color_point="black"):
         if not self.visualized:
             self.visualized = True
             if ax is None:
                 self.fig = plt.figure()
                 self.ax = self.fig.add_subplot(111, projection='3d')
-                self.ax.view_init(elev=90, azim=0)
+                self.ax.view_init(elev=30, azim=60)
                 self.ax.set_xlabel("X")
                 self.ax.set_ylabel("Y")
                 self.ax.set_zlabel("Z")
@@ -95,7 +131,6 @@ class CatenaryNetwork:
 
         for i, connection in enumerate(self.connections):
             # Retrieve curve parameters and sampled points
-            p1, p2 = points[connection[0], :], points[connection[1], :]
             c, x0, z0, length, rotation, translation, sampled_points = self.catenary_network_params[i]
 
             # Plot the full catenary curve with transparency (alpha=0.5)
@@ -110,21 +145,119 @@ class CatenaryNetwork:
                 full_curve_global[:, 1],
                 full_curve_global[:, 2],
                 color=color_curve,
-                alpha=0.5,
-                label=f"Curve {i}"
+                alpha=0.75,
+                label=f"Curve {i}",
+                linewidth=2
             )
 
             # Plot the sampled points on the curve
             self.ax.scatter(
-                sampled_points[:, 0],
-                sampled_points[:, 1],
-                sampled_points[:, 2],
+                sampled_points[1:self.num_samples-1, 0],
+                sampled_points[1:self.num_samples-1, 1],
+                sampled_points[1:self.num_samples-1, 2],
                 color=color_point,
                 label=f"Sampled Points {i}"
             )
 
+            self.ax.scatter(
+                sampled_points[0, 0],
+                sampled_points[0, 1],
+                sampled_points[0, 2],
+                color="red",
+                label=f"Endpoints {i}"
+            )
 
-    # Functions
+            self.ax.scatter(
+                sampled_points[-1, 0],
+                sampled_points[-1, 1],
+                sampled_points[-1, 2],
+                color="red",
+                label=f"Endpoints {i}"
+            )
+
+        # Create a mesh grid for the fitted surface
+        for i, surface_param in enumerate(self.surface_params):
+            points = set()
+            connection_ids = self.surfaces[i]
+            for connection_id in connection_ids:
+                point_ids = self.connections[connection_id]
+                for point_id in point_ids:
+                    points.add(point_id)
+
+            p1 = self.points[points.pop()][:2]
+            p2 = self.points[points.pop()][:2]
+            p3 = self.points[points.pop()][:2]
+            x_mesh, y_mesh = self._generate_mesh_in_triangle(p1, p2, p3, 10)
+
+            # Compute the fitted z-values
+            z_mesh = self._catenary_surface(surface_param, x_mesh, y_mesh)
+
+            # Plot the fitted catenary surface
+            self.ax.plot_trisurf(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), cmap='magma', alpha=1.0, edgecolor='none')
+
+
+    def _generate_mesh_in_triangle(self, p1, p2, p3, resolution=10):
+        """
+        Generate a mesh grid enclosed by a triangle defined by three 2D points.
+
+        Parameters:
+            p1, p2, p3 (tuple): Vertices of the triangle, each represented as (x, y).
+            resolution (int): Number of points along each side of the triangle.
+
+        Returns:
+            tuple: Two 2D arrays (x_mesh, y_mesh) representing the mesh grid points.
+        """
+        # Create a bounding grid
+        x_min = min(p1[0], p2[0], p3[0])
+        x_max = max(p1[0], p2[0], p3[0])
+        y_min = min(p1[1], p2[1], p3[1])
+        y_max = max(p1[1], p2[1], p3[1])
+
+        x_grid = np.linspace(x_min, x_max, resolution)
+        y_grid = np.linspace(y_min, y_max, resolution)
+        x_mesh, y_mesh = np.meshgrid(x_grid, y_grid)
+
+        # Flatten the mesh grids
+        x_flat = x_mesh.flatten()
+        y_flat = y_mesh.flatten()
+
+        # Create a matrix of points
+        points = np.vstack((x_flat, y_flat)).T
+
+        # Barycentric test to check if points are inside the triangle
+        def barycentric_test(point, p1, p2, p3):
+            # Convert triangle vertices and point to numpy arrays
+            v0 = np.array(p3) - np.array(p1)
+            v1 = np.array(p2) - np.array(p1)
+            v2 = np.array(point) - np.array(p1)
+
+            # Compute dot products
+            dot00 = np.dot(v0, v0)
+            dot01 = np.dot(v0, v1)
+            dot02 = np.dot(v0, v2)
+            dot11 = np.dot(v1, v1)
+            dot12 = np.dot(v1, v2)
+
+            # Compute barycentric coordinates
+            denom = dot00 * dot11 - dot01 * dot01
+            if denom == 0:
+                return False  # Degenerate triangle
+
+            u = (dot11 * dot02 - dot01 * dot12) / denom
+            v = (dot00 * dot12 - dot01 * dot02) / denom
+
+            # Check if point is inside the triangle
+            return (u > 1e-3) and (v > 1e-3) and (u + v < 1)
+
+        inside = np.array([barycentric_test(point, p1, p2, p3) for point in points])
+
+        # Filter points inside the triangle
+        x_inside = x_flat[inside]
+        y_inside = y_flat[inside]
+
+        return x_inside.reshape(-1, 1), y_inside.reshape(-1, 1)
+
+
     def _transform_to_local_frame(self, p1, p2):
         """
         Compute the rotation matrix and translation to align p1 and p2 along the x-axis in a local frame across p1 and p2
@@ -425,58 +558,96 @@ def generate_mesh_intersections(x0, y0, z0, size=9, spacing=1.0):
     return intersections
 
 
+def generate_planar_graph(points):
+    """
+    Generate a planar graph from 2D point positions using Delaunay triangulation.
+
+    Parameters:
+        points: A list of 2D points, where each point is represented as (x, y).
+
+    Returns:
+        tuple: A tuple containing:
+            - list of tuple: A list of edges, where each edge is represented by the indices of the points it connects.
+            - list of list: A list of triangle surfaces, where each surface is represented as [e1, e2, e3],
+              with ei being the index of the edge in the edge list.
+    """
+    # Convert the list of points to a NumPy array
+    points = np.array(points)
+
+    # Perform Delaunay triangulation
+    triangulation = Delaunay(points)
+
+    # Extract edges from the simplices (triangles)
+    simplices = triangulation.simplices
+    edges = np.vstack([simplices[:, [0, 1]], simplices[:, [1, 2]], simplices[:, [2, 0]]])
+
+    # Sort each edge to ensure consistent representation
+    edges = np.sort(edges, axis=1)
+
+    # Remove duplicate edges
+    edges = np.unique(edges, axis=0)
+
+    # Create a mapping from edges to their indices
+    edge_to_index = {tuple(edge): i for i, edge in enumerate(edges)}
+
+    # Extract triangle surfaces as edge indices
+    triangle_surfaces = []
+    for simplex in simplices:
+        triangle_edges = [
+            edge_to_index[tuple(sorted([simplex[0], simplex[1]]))],
+            edge_to_index[tuple(sorted([simplex[1], simplex[2]]))],
+            edge_to_index[tuple(sorted([simplex[2], simplex[0]]))]
+        ]
+        triangle_surfaces.append(triangle_edges)
+
+    return edges, triangle_surfaces
+
+
 if __name__ == "__main__":
-    """ Desired mesh, defined by the quadrotor positions """
-    # desired_points = np.array([[0.49, 0.51, 0.03],  # 0
-    #                            [-0.5, 0.5, 0.02],  # 1
-    #                            [-0.5, -0.5, 0.0],  # 2
-    #                            [0.5, -0.5, -0.01],  # 3
-    #                            [0.0, 0.0, 0.01]])  # 4
-    #
-    # # which quadrotors are connected, in terms of their indices
-    # desired_connections = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 4], [2, 4], [3, 4]]
-    #
-    # # the lengths of the connections
-    # desired_Ls = [1.0, 1.0, 1.0, 1.0, 0.707, 0.71, 0.71, 0.71]
-    #
-    # # get some initial guesses
-    # initial_guess = None
-    #
-    # desired_catenary_network = CatenaryNetwork(desired_points, desired_connections, desired_Ls)
-    # desired_sample_positions = desired_catenary_network.get_samples()
     desired_mesh = generate_mesh_intersections(0, 0, 0.0, size=9, spacing=0.125)
 
     """ Current quadrotor positions """
-    points = np.array([[0.32, 0.3, 0.2],        # 0
-                       [-0.3, 0.31, -0.01],     # 1
-                       [-0.29, -0.3, -0.1],     # 2
-                       [0.3, -0.28, 0.05],      # 3
-                       [0.01, -0.02, -0.1]])    # 4
+    points = np.array([[0.32, 0.3, -0.3],        # 0
+                       [-0.3, 0.31, 0.2],      # 1
+                       [-0.29, -0.3, -0.2],    # 2
+                       [0.3, -0.28, 0.3]])      # 3
+                       # [0.01, -0.02, -0.05],    # 4
+                       # []]
 
+    connections, surfaces = generate_planar_graph(points[:, :2])
+
+    # this is an estimation of the curve lengths. It will improve the performance if we know them
+    Ls = [1.2*np.linalg.norm(points[point_ids[0], :] - points[point_ids[1], :]) for point_ids in connections]
+    # Ls = [1, 1, 1, 1.5, 1.]
+    # print("Edges:", edges, "Surfs", surfs)
+
+    # exit(0)
     # which quadrotors are connected, in terms of their indices
-    connections = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 4], [2, 4], [3, 4]]
+    # connections = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 4], [2, 4], [3, 4]]
+
+    # which curves enclose a surface
+    # surfaces = [[0, 4, 5], [1, 5, 6], [2, 6, 7], [3, 7, 4]]
 
     # the lengths of the connections
-    Ls = [1, 1, 1, 1, 0.7, 0.7, 0.7, 0.7]
+    # Ls = [1.2, 1.2, 1.2, 1.2, 0.75, 0.75, 0.75, 0.75]
 
     # get some initial guesses
     initial_guess = None  # [0.5, (p1[0] + p2[0]) / 2, (p1[2] + p2[2]) / 2]
 
-    catenary_network = CatenaryNetwork(points, connections, Ls)
+    num_samples = 5
+    catenary_network = CatenaryNetwork(points, connections, Ls, surfaces, num_samples=num_samples)
 
     for i in range(1000):
         # Fit the 3D catenary network and sample points
         catenary_network.visualize()
-        catenary_network.ax.scatter(desired_mesh[:, 0],
-                                    desired_mesh[:, 1],
-                                    desired_mesh[:, 2],
-                                    color="red")
-        # desired_catenary_network.visualize(catenary_network.ax, color_curve="red", color_point="black")
         plt.pause(0.0001)
         time_start = time.time()
         catenary_network.update(points)
         sample_points = catenary_network.get_samples()
+        catenary_network.get_surfaces()
         print("error", average_hausdorff_distance(desired_mesh, sample_points))
         print("Time elapsed for fitting the curves and calculating the error:", time.time() - time_start)
-        points += np.random.normal(loc=0.0, scale=0.005, size=points.shape)
+        points += np.random.normal(loc=0.0, scale=0.002, size=points.shape)
+        # if i == 5:
+        #     plt.pause(100000)
         catenary_network.ax.clear()
