@@ -129,37 +129,39 @@ class CatenaryFlySurf:
         points = np.vstack((x_flat, y_flat)).T
 
         # Barycentric test to check if points are inside the triangle
-        def barycentric_test(point, p1, p2, p3):
-            # Convert triangle vertices and point to numpy arrays
-            v0 = np.array(p3) - np.array(p1)
-            v1 = np.array(p2) - np.array(p1)
-            v2 = np.array(point) - np.array(p1)
 
-            # Compute dot products
-            dot00 = np.dot(v0, v0)
-            dot01 = np.dot(v0, v1)
-            dot02 = np.dot(v0, v2)
-            dot11 = np.dot(v1, v1)
-            dot12 = np.dot(v1, v2)
 
-            # Compute barycentric coordinates
-            denom = dot00 * dot11 - dot01 * dot01
-            if denom == 0:
-                return False  # Degenerate triangle
-
-            u = (dot11 * dot02 - dot01 * dot12) / denom
-            v = (dot00 * dot12 - dot01 * dot02) / denom
-
-            # Check if point is inside the triangle
-            return (u > 1e-6) and (v > 1e-6) and (u + v < 1)
-
-        inside = np.array([barycentric_test(point, p1, p2, p3) for point in points])
+        inside = np.array([self._barycentric_test(point, p1, p2, p3) for point in points])
 
         # Filter points inside the triangle
         x_inside = x_flat[inside]
         y_inside = y_flat[inside]
 
         return x_inside.reshape(-1, 1), y_inside.reshape(-1, 1)
+
+    def _barycentric_test(self, point, p1, p2, p3):
+        # Convert triangle vertices and point to numpy arrays
+        v0 = np.array(p3) - np.array(p1)
+        v1 = np.array(p2) - np.array(p1)
+        v2 = np.array(point) - np.array(p1)
+
+        # Compute dot products
+        dot00 = np.dot(v0, v0)
+        dot01 = np.dot(v0, v1)
+        dot02 = np.dot(v0, v2)
+        dot11 = np.dot(v1, v1)
+        dot12 = np.dot(v1, v2)
+
+        # Compute barycentric coordinates
+        denom = dot00 * dot11 - dot01 * dot01
+        if denom == 0:
+            return False  # Degenerate triangle
+
+        u = (dot11 * dot02 - dot01 * dot12) / denom
+        v = (dot00 * dot12 - dot01 * dot02) / denom
+
+        # Check if point is inside the triangle
+        return (u > 0) and (v > 0) and (u + v < 1)
 
     def _catenary_surface(self, params, x, y):
         a, x0, y0, z0 = params
@@ -241,6 +243,7 @@ class CatenaryFlySurf:
 
                         # 2) Check geometry vs. existing triangles
                         exclude_new = False
+
                         for tri_key in active_surface:
                             # Reconstruct the old triangle from tri_key -> tri_old
                             tcoords = [self._index2coord(idx) for idx in tri_key]
@@ -268,9 +271,9 @@ class CatenaryFlySurf:
         # For each vertex in triA, check if it's inside triB
         # If 3D, you might need to project them onto a common plane or handle them in 3D if they're guaranteed to be co-planar
         for pt in triA:
-            if not self.point_in_triangle(pt, triB[0], triB[1], triB[2]):
-                return False
-        return True
+            if self._barycentric_test(pt, triB[0], triB[1], triB[2]):
+                return True
+        return False
 
     def point_in_triangle(self, pt, v1, v2, v3):
         """
@@ -300,7 +303,7 @@ class CatenaryFlySurf:
         v = (dot00 * dot12 - dot01 * dot02) * invDenom
 
         # Check if point is in triangle
-        return (u >= 0) and (v >= 0) and (u + v < 1)
+        return (u > 0) and (v > 0) and (u + v < 1)
 
     def is_enclosing(self, triA, triB):
         """
@@ -658,8 +661,8 @@ def visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=Tru
 
             # Plot the fitted catenary surface
             try:
-                ax.plot_trisurf(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), cmap=christmas_cmap, alpha=1.0, edgecolor='none')
-                # ax.plot(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), "*")
+                # ax.plot_trisurf(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), cmap=christmas_cmap, alpha=1.0, edgecolor='none')
+                ax.plot(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), "*")
             except:
                 pass
 
@@ -674,16 +677,16 @@ if __name__ == "__main__":
                              [0, 8],
                              [0, 0],
                              [8, 0],
-                             [4, 4],])
-                             # [5, 3],
-                             # [5, 5]])
+                             [2, 4],
+                             [6, 4],
+                             [5, 5]])
     points = np.array([[ 0.41,   0.39,    0.15],       # 0
                        [-0.38,   0.42,   -0.05],     # 1
                        [-0.44,  -0.37,    0.08],      # 2
-                       [0.40,   -0.28,   -0.04],     # 3
-                       [0.01,   -0.02,     0.2],])
-                       # [0.08,   -0.05,     0.1],
-                       # [0.04,    0.07,    -0.1]])
+                       [ 0.40,  -0.28,   -0.04],    # 3
+                       [-0.19,   0.01,     0.2],
+                       [ 0.21,  -0.02,     0.1],
+                       [0.04,    0.07,    -0.1]])
 
     flysurf = CatenaryFlySurf(9, 9, 0.2)
     fig = plt.figure()
@@ -698,7 +701,7 @@ if __name__ == "__main__":
         time_start = time.time()
         points[1, 2] += oscillation(i)
         points[3, 2] += oscillation(i)
-        ax.view_init(elev=30, azim=60+0.5*i)
+        ax.view_init(elev=45+15*np.cos(i/20), azim=60+0.5*i)
         flysurf.update(points_coord, points)
         print(time.time() - time_start)
         visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=True)
