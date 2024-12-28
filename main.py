@@ -162,44 +162,44 @@ class CatenaryNetwork:
             # Retrieve curve parameters and sampled points
             c, x0, z0, length, rotation, translation, sampled_points = self.catenary_network_params[i]
 
-            # Plot the full catenary curve with transparency (alpha=0.5)
-            x_full = np.linspace(0, length, 10)  # sampling
+            # Transform endpoints to the local frame
+            p1_local = np.array([0, 0, 0])  # Always origin in local frame
+            p2_local = rotation.apply(self.points[connection[1]] - self.points[connection[0]])
+
+            x1, x2 = p1_local[0], p2_local[0]
+
+            # Sampling over the calculated length within the bounds of the endpoints
+            x_full = np.linspace(x1, x2, 100)  # Ensure sampling stays between endpoints
             z_full = c * np.cosh((x_full - x0) / c) + z0
             y_full = np.zeros_like(x_full)
             full_curve_local = np.vstack((x_full, y_full, z_full)).T
-            full_curve_global = rotation.inv().apply(full_curve_local) + translation
+            full_curve_global = rotation.inv().apply(full_curve_local) + self.points[connection[0]]
 
+            # Plot the catenary curve
             self.ax.plot(
                 full_curve_global[:, 0],
                 full_curve_global[:, 1],
                 full_curve_global[:, 2],
                 color=color_curve,
                 alpha=0.75,
-                label=f"Curve {i}",
-                linewidth=2
+                linewidth=2,
+                label=f"Curve {i}"
             )
 
             # Plot the sampled points on the curve
             self.ax.scatter(
-                sampled_points[1:self.num_samples-1, 0],
-                sampled_points[1:self.num_samples-1, 1],
-                sampled_points[1:self.num_samples-1, 2],
+                sampled_points[:, 0],
+                sampled_points[:, 1],
+                sampled_points[:, 2],
                 color=color_point,
                 label=f"Sampled Points {i}"
             )
 
+            # Mark endpoints explicitly
             self.ax.scatter(
-                sampled_points[0, 0],
-                sampled_points[0, 1],
-                sampled_points[0, 2],
-                color="red",
-                label=f"Endpoints {i}"
-            )
-
-            self.ax.scatter(
-                sampled_points[-1, 0],
-                sampled_points[-1, 1],
-                sampled_points[-1, 2],
+                [self.points[connection[0]][0], self.points[connection[1]][0]],
+                [self.points[connection[0]][1], self.points[connection[1]][1]],
+                [self.points[connection[0]][2], self.points[connection[1]][2]],
                 color="red",
                 label=f"Endpoints {i}"
             )
