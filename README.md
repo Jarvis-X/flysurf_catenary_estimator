@@ -1,13 +1,8 @@
-Implementation of the CatenaryNetwork class
+Implementation of the CatenaryFlySurf class
 
-For test, in the main function:
-- Initialize CatenaryNetwork with 
-  - 3D Positions of actuators (quadrotors)
-  - Actuator indices to connect with catenary curves
-  - Lengths of the curves
+For test, in the main function of the catenary_flysurf.py:
+- Initialize CatenaryFlySurf with 
+  - The number of rows and columns in the mesh
+  - distance between each cell
   
-- Update in each iteration with new positions of the actuators
-
-- Call get_samples to obtain positions on the catenary curves that are equally spaced on each curve
-
-- Replace `np.mean(desired_sample_positions - sample_points)` with AHD or other error metrics
+- Update in each iteration with new positions of the actuators (points) associated with the mesh coordinates
