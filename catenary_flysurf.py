@@ -670,45 +670,184 @@ def visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=Tru
     plt.pause(0.0001)
 
 
-def sampling_v1(fig, ax, flysurf, resolution=10):
+def compute_intersection(p1, p2, q1, q2):
+    """
+    Compute the intersection of two line segments defined by endpoints p1 -> p2 and q1 -> q2.
+    Returns the intersection point if it exists and lies within both line segments, otherwise None.
+    """
+    A = np.array([p2 - p1, q1 - q2]).T
+    b = q1 - p1
+
+    try:
+        t, s = np.linalg.solve(A, b)  # Solve for parameters t and s
+        if 0 <= t <= 1 and 0 <= s <= 1:  # Ensure the intersection lies within both segments
+            return (1 - t) * p1 + t * p2  # Compute intersection point
+    except np.linalg.LinAlgError:
+        pass  # Lines are parallel or coincident
+
+    return None
+
+
+def find_all_intersections_batch(S1, S2):
+    """
+    Optimized function to find all intersections between line segments in S1 and S2 using numpy batch operations.
+    S1 and S2 are arrays of shape (N, 2, 2) and (M, 2, 2), where each segment is defined by two endpoints [p1, p2].
+    Returns an array of intersection points.
+    """
+    S1 = np.array(S1)  # Ensure input is a numpy array
+    S2 = np.array(S2)
+
+    p1 = S1[:, 0, :]  # Start points of segments in S1
+    p2 = S1[:, 1, :]  # End points of segments in S1
+    q1 = S2[:, 0, :]  # Start points of segments in S2
+    q2 = S2[:, 1, :]  # End points of segments in S2
+
+    # Direction vectors for segments
+    d1 = p2 - p1  # Direction vectors for S1
+    d2 = q2 - q1  # Direction vectors for S2
+
+    # Cross product for batch determinant computation
+    cross_d1_d2 = np.cross(d1[:, None], d2)
+    cross_q1_p1_d2 = np.cross(q1[None, :] - p1[:, None], d2)
+    cross_p1_q1_d1 = np.cross(p1[:, None] - q1, d1)
+
+    # Avoid division by zero (parallel lines) by masking invalid values
+    valid_mask = cross_d1_d2 != 0
+
+    # Solve for t and s only where valid
+    t = np.where(valid_mask, cross_q1_p1_d2 / cross_d1_d2, np.nan)
+    s = np.where(valid_mask, cross_p1_q1_d1 / cross_d1_d2, np.nan)
+
+    # Compute intersection points where valid
+    intersections = p1[:, None] + t[..., None] * d1[:, None]
+    return intersections.reshape(-1, 2)
+
+
+def sampling_v1(fig, ax, flysurf, resolution, plot=False):
+    """ NOTE:
+        We have to ensure that the 4 corners of the mesh are 
+        ALWAYS giving us four active ridges
+    """
+    # collection of all samples
+    # FIRST: Four corners
+    num_side_samples = resolution+2
+    all_samples = np.zeros((num_side_samples**2, 3))
+    # upper-right
+    # upper-left
+    # lower-left
+    # lower-right
+    all_samples[[num_side_samples**2-1, 
+                 num_side_samples**2-num_side_samples,
+                 0, num_side_samples-1], :] = points[0:4, :]
+    
+    if plot:
+        ax.plot(points[0:4, 0], points[0:4, 1], points[0:4, 2], "*")
+
+    four_outermost_edges = [(0, resolution),  # bottom
+                            (resolution, (resolution+1)**2-1),  # right
+                            ((resolution+1)*resolution, (resolution+1)**2-1),  # top
+                            (0, (resolution+1)*resolution)]  # left
+    
+    line_seg_points = []
+    for i, connection in enumerate(four_outermost_edges):
+        # Retrieve curve parameters and sampled points
+        curve_length, catenary_param, other_data = flysurf.catenary_curve_params[connection]
+        c, x0, z0 = catenary_param
+        dist, rotation, translation, samples_per_connection = other_data
+
+        x_end = np.linalg.norm(samples_per_connection[-1][:2] - samples_per_connection[0][:2])
+
+        # Plot the full catenary curve
+        x_full = np.linspace(x_end/resolution, x_end*(resolution-1)/resolution, resolution)  # sampling
+        z_full = c * np.cosh((x_full - x0) / c) + z0
+        y_full = np.zeros_like(x_full)
+        full_curve_local = np.vstack((x_full, y_full, z_full)).T
+        full_curve_global = rotation.inv().apply(full_curve_local) + translation
+
+        # SECOND: four sides
+        if i == 0:
+            all_samples[1:num_side_samples-1, :] = full_curve_global
+        elif i == 1:
+            all_samples[range(num_side_samples*2 - 1, num_side_samples**2-1, num_side_samples), :] = full_curve_global
+        elif i == 2:
+            all_samples[(num_side_samples-1)*num_side_samples+1:num_side_samples**2-1, :] = full_curve_global
+        elif i == 3:
+            all_samples[range(num_side_samples, (num_side_samples-2)*num_side_samples+1, num_side_samples), :] = full_curve_global
+
+        line_seg_points.append(full_curve_global[:, 0:2])
+        if plot:
+            ax.plot(
+                full_curve_global[:, 0],
+                full_curve_global[:, 1],
+                full_curve_global[:, 2],
+                "*"
+            )
+
+    line_pairs = [[line_seg_points[1], line_seg_points[3]], [line_seg_points[0], line_seg_points[2]]]
+    S = [np.zeros((resolution, 2, 2)), np.zeros((resolution, 2, 2))]
+    for i, points_pair in enumerate(line_pairs):
+        points1, points2 = points_pair
+        if not compute_intersection(points1[0], points2[0], points1[-1], points2[-1]) is None:
+            # let's see how we align the points on the two segments
+            points1 = points1[::-1]
+        for j in range(resolution):
+            S[i][j, 0, :] = points1[j, :]
+            S[i][j, 1, :] = points2[j, :]
+    
+    intersctions = find_all_intersections_batch(S[0], S[1])
+
+    surf_info = []
     for i, surface in enumerate(flysurf.active_surface):
         num_edges = len(surface)
         c, x, y, z = flysurf.catenary_surface_params[surface]
-        points = []
+        surf_corners = []
         for j in range(num_edges):
             for k in range(j + 1, num_edges):
                 edge = tuple(sorted((surface[j], surface[k])))
                 for v in flysurf.active_ridge[edge]:
                     good = True
-                    for p in points:
+                    for p in surf_corners:
                         if np.allclose(v, p):
                             good = False
                             break
                     if good:
-                        points.append(v)
+                        surf_corners.append(v)
+        
+        surf_info.append((surf_corners, [c, x, y, z]))
 
-        x_mesh, y_mesh = flysurf._generate_mesh_in_triangle(np.array(points[0])[:2],
-                                                            np.array(points[1])[:2],
-                                                            np.array(points[2])[:2], resolution)
-
-        # Compute the fitted z-values
-        z_mesh = flysurf._catenary_surface((c, x, y, z), x_mesh, y_mesh)
-
-        # Plot the fitted catenary surface
-        try:
-            # ax.plot_trisurf(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), cmap=christmas_cmap, alpha=1.0, edgecolor='none')
-            ax.plot(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), "*")
-        except:
-            pass
-
-    plt.pause(0.0001)
+    z_vals = []
+    for point in intersctions:
+        for surf_corners, surf_params in surf_info:
+            c, x, y, z = surf_params
+            if flysurf._barycentric_test(point, surf_corners[0][:2], surf_corners[1][:2], surf_corners[2][:2]):
+                z_vals.append(flysurf._catenary_surface((c, x, y, z), point[0], point[1]))
+                break
     
+    # THIRD: inner surfaces
+    intersctions = np.column_stack((intersctions, z_vals))
+
+    all_samples[[i*num_side_samples + j for i in range(1, num_side_samples-1) for j in range(1, num_side_samples -1)], :] = intersctions
+    if plot:
+        ax.plot(intersctions[:, 0], intersctions[:, 1], intersctions[:, 2], "*")
+
+    # ax.plot(all_samples[:, 0], all_samples[:, 1], all_samples[:, 2], "*")
+    if plot:
+        plt.pause(0.0001)
+    return all_samples
 
 def oscillation(i):
     return np.sin(i*np.pi/100)*0.01
 
 
 if __name__ == "__main__":
+    """ NOTE: 
+        Please make sure the first four points are the four outermost
+        corners of the mesh, AND
+        They are ordered as upper-right
+                            upper-left
+                            lower-left
+                            lower-right
+    """
     points_coord = np.array([[8, 8],
                              [0, 8],
                              [0, 0],
@@ -724,13 +863,12 @@ if __name__ == "__main__":
                     #    [ 0.21,  -0.02,     0.1],
                        [0.04,    0.07,    -0.1]])
 
-    flysurf = CatenaryFlySurf(9, 9, 0.15)
+    mesh_size = 9
+    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 0.15)
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
-    ax.view_init(elev=30, azim=60)
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Z")
+    ax.view_init(elev=90, azim=-90)
+    
 
     for i in range(10000):
         ax.clear()
@@ -741,5 +879,16 @@ if __name__ == "__main__":
         # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
         flysurf.update(points_coord, points)
         print(time.time() - time_start)
-        visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=10)
+        # visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=10)
+
+        all_samples = sampling_v1(fig, ax, flysurf, mesh_size-1)
+
+        # print(all_samples)
+        ax.plot(all_samples[0:2, 0], all_samples[0:2, 1], all_samples[0:2, 2], "*")
+        ax.plot(all_samples[1:, 0], all_samples[1:, 1], all_samples[1:, 2], "*")
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+        plt.pause(0.0001)
+        # input()
 
