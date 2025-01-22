@@ -580,10 +580,10 @@ class CatenaryFlySurf:
     def _index2coord(self, index: int):
         i = index // self.lc
         j = index - i*self.lc
-        return i, j
+        return  i, j
 
 
-def visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True):
+def visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=10):
     for i, connection in enumerate(flysurf.active_ridge):
         # Retrieve curve parameters and sampled points
         V1, V2 = connection
@@ -622,7 +622,7 @@ def visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=Tru
             x_end = np.linalg.norm(samples_per_connection[-1][:2] - samples_per_connection[0][:2])
 
             # Plot the full catenary curve
-            x_full = np.linspace(0, x_end, 10)  # sampling
+            x_full = np.linspace(0, x_end, num_samples)  # sampling
             z_full = c * np.cosh((x_full - x0) / c) + z0
             y_full = np.zeros_like(x_full)
             full_curve_local = np.vstack((x_full, y_full, z_full)).T
@@ -631,6 +631,7 @@ def visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=Tru
                 full_curve_global[:, 0],
                 full_curve_global[:, 1],
                 full_curve_global[:, 2],
+                "*",
                 alpha=0.75,
                 label=f"Curve {i}",
                 linewidth=2
@@ -654,7 +655,7 @@ def visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=Tru
 
             x_mesh, y_mesh = flysurf._generate_mesh_in_triangle(np.array(points[0])[:2],
                                                                 np.array(points[1])[:2],
-                                                                np.array(points[2])[:2], 10)
+                                                                np.array(points[2])[:2], num_samples)
 
             # Compute the fitted z-values
             z_mesh = flysurf._catenary_surface((c, x, y, z), x_mesh, y_mesh)
@@ -668,6 +669,41 @@ def visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=Tru
 
     plt.pause(0.0001)
 
+
+def sampling_v1(fig, ax, flysurf, resolution=10):
+    for i, surface in enumerate(flysurf.active_surface):
+        num_edges = len(surface)
+        c, x, y, z = flysurf.catenary_surface_params[surface]
+        points = []
+        for j in range(num_edges):
+            for k in range(j + 1, num_edges):
+                edge = tuple(sorted((surface[j], surface[k])))
+                for v in flysurf.active_ridge[edge]:
+                    good = True
+                    for p in points:
+                        if np.allclose(v, p):
+                            good = False
+                            break
+                    if good:
+                        points.append(v)
+
+        x_mesh, y_mesh = flysurf._generate_mesh_in_triangle(np.array(points[0])[:2],
+                                                            np.array(points[1])[:2],
+                                                            np.array(points[2])[:2], resolution)
+
+        # Compute the fitted z-values
+        z_mesh = flysurf._catenary_surface((c, x, y, z), x_mesh, y_mesh)
+
+        # Plot the fitted catenary surface
+        try:
+            # ax.plot_trisurf(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), cmap=christmas_cmap, alpha=1.0, edgecolor='none')
+            ax.plot(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), "*")
+        except:
+            pass
+
+    plt.pause(0.0001)
+    
+
 def oscillation(i):
     return np.sin(i*np.pi/100)*0.01
 
@@ -677,18 +713,18 @@ if __name__ == "__main__":
                              [0, 8],
                              [0, 0],
                              [8, 0],
-                             [2, 4],
-                             [6, 4],
+                            #  [2, 4],
+                            #  [6, 4],
                              [5, 5]])
     points = np.array([[ 0.41,   0.39,    0.15],       # 0
                        [-0.38,   0.42,   -0.05],     # 1
                        [-0.44,  -0.37,    0.08],      # 2
                        [ 0.40,  -0.28,   -0.04],    # 3
-                       [-0.19,   0.01,     0.2],
-                       [ 0.21,  -0.02,     0.1],
+                    #    [-0.19,   0.01,     0.2],
+                    #    [ 0.21,  -0.02,     0.1],
                        [0.04,    0.07,    -0.1]])
 
-    flysurf = CatenaryFlySurf(9, 9, 0.2)
+    flysurf = CatenaryFlySurf(9, 9, 0.15)
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=30, azim=60)
@@ -696,13 +732,14 @@ if __name__ == "__main__":
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
 
-    for i in range(1000):
+    for i in range(10000):
         ax.clear()
         time_start = time.time()
-        points[1, 2] += oscillation(i)
-        points[3, 2] += oscillation(i)
-        ax.view_init(elev=45+15*np.cos(i/20), azim=60+0.5*i)
+        points[1, 2] += 0.8*oscillation(1.5*i)
+        points[3, 2] += oscillation(i+5)
+        points[3, 2] -= 0.7*oscillation(2.0*i+3)
+        # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
         flysurf.update(points_coord, points)
         print(time.time() - time_start)
-        visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=True)
+        visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=10)
 
