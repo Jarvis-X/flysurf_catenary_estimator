@@ -196,8 +196,8 @@ class CatenaryFlySurf:
             if visited is None:
                 visited = set()
             for j in range(i + 1, len(L)):
-                if (i, j) not in visited:
-                    visited.add((i, j))
+                if tuple(sorted((i, j))) not in visited:
+                    visited.add(tuple(sorted((i, j))))
                     yield (L[i], L[j])
                     yield from dfs_pairs(L, j, visited)
 
@@ -353,7 +353,7 @@ class CatenaryFlySurf:
                 self._objective_with_gradient,
                 guesses[i],
                 args=(x1, z1, x2, z2, length),
-                bounds=[(1e-2, None), (None, None), (None, None)],  # Ensure c > 0
+                bounds=[(1e-2, 1), (None, None), (None, None)],  # Ensure c > 0
                 method='L-BFGS-B',
                 jac=True,
                 options={"maxiter": 1000, "disp": False},
@@ -752,16 +752,9 @@ def sampling_v1(fig, ax, flysurf, resolution, plot=False):
     for i, connection in enumerate(four_outermost_edges):
         # Retrieve curve parameters and sampled points
         curve_length, catenary_param, other_data = flysurf.catenary_curve_params[connection]
-        c, x0, z0 = catenary_param
         dist, rotation, translation, samples_per_connection = other_data
 
-        # x_end = np.linalg.norm(samples_per_connection[-1][:2] - samples_per_connection[0][:2])
-
-        # # Plot the full catenary curve
-        # x_full = np.linspace(x_end/resolution, x_end*(resolution-1)/resolution, resolution)  # sampling
-        # z_full = c * np.cosh((x_full - x0) / c) + z0
-        # y_full = np.zeros_like(x_full)
-        # full_curve_local = np.vstack((x_full, y_full, z_full)).T
+        # Plot the full catenary curve
         full_curve_global = samples_per_connection[1:len(samples_per_connection)-1]
 
         # SECOND: four sides
@@ -848,23 +841,30 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    points_coord = np.array([[8, 8],
-                             [0, 8],
+    mesh_size = 21
+    points_coord = np.array([[mesh_size-1, mesh_size-1],
+                             [mesh_size-1, 0],
                              [0, 0],
-                             [8, 0],
+                             [0, mesh_size-1],
+                             [(mesh_size-1)//2-1, (mesh_size-1)//2-1]])
                             #  [2, 4],
                             #  [6, 4],
-                             [5, 5]])
-    points = np.array([[ 0.41,   0.39,    0.15],       # 0
-                       [-0.38,   0.42,   -0.05],     # 1
-                       [-0.44,  -0.37,    0.08],      # 2
-                       [ 0.40,  -0.28,   -0.04],    # 3
-                    #    [-0.19,   0.01,     0.2],
-                    #    [ 0.21,  -0.02,     0.1],
-                       [0.04,    0.07,    -0.1]])
+                            #  [5, 5]])
+    
+    points = np.array([[ 0.9,   0.4,   0.45],
+                       [ 0.1,   0.4,   0.45],
+                       [ 0.1,  -0.4,   0.45],
+                       [ 0.9,  -0.4,   0.45],
+                       [ 0.5,   0.,    0.45]])
 
-    mesh_size = 9
-    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 0.15, num_sample_per_curve=mesh_size+1)
+    # points = np.array([[ 0.41,   0.39,    0.15],       # 0
+    #                    [-0.38,   0.42,   -0.05],     # 1
+    #                    [-0.44,  -0.37,    0.08],      # 2
+    #                    [ 0.40,  -0.28,   -0.04],    # 3
+    #                 #    [-0.19,   0.01,     0.2],
+    #                 #    [ 0.21,  -0.02,     0.1],
+    #                    [0.04,    0.07,    -0.1]])
+    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1/(mesh_size-1), num_sample_per_curve=mesh_size+1)
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=90, azim=-90)
@@ -873,9 +873,9 @@ if __name__ == "__main__":
     for i in range(10000):
         ax.clear()
         time_start = time.time()
-        points[1, 2] += 0.8*oscillation(1.5*i)
-        points[3, 2] += oscillation(i+5)
-        points[3, 2] -= 0.7*oscillation(2.0*i+3)
+        points[1, 2] += 0.05*oscillation(1.5*i)
+        points[3, 2] += 0.07*oscillation(i+5)
+        points[3, 2] -= 0.05*oscillation(2.0*i+3)
         # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
         flysurf.update(points_coord, points)
         print(time.time() - time_start)
