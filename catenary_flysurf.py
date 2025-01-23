@@ -45,7 +45,7 @@ class CatenaryFlySurf:
                 i1, j1 = self._index2coord(i)
                 i2, j2 = self._index2coord(j)
                 self.catenary_curve_params[tuple(sorted((i, j)))] = [
-                    np.sqrt((i1 - i2) ** 2 + (j1 - j2) ** 2) * self.cell_length, [0.5, 0, 0], None]
+                    np.sqrt((i1 - i2) ** 2 + (j1 - j2) ** 2) * self.cell_length, [0.1, 0, 0], None]
 
         """ The following was a bit too much (4 Billion elements w/ lc = lr = 9) """
         # max_num_curves = len(self.catenary_curve_params)
@@ -353,10 +353,10 @@ class CatenaryFlySurf:
                 self._objective_with_gradient,
                 guesses[i],
                 args=(x1, z1, x2, z2, length),
-                bounds=[(1e-2, 1), (None, None), (None, None)],  # Ensure c > 0
+                bounds=[(1e-2, 5), (None, None), (None, None)],  # Ensure c > 0
                 method='L-BFGS-B',
                 jac=True,
-                options={"maxiter": 1000, "disp": False},
+                options={"maxiter": 1000, "disp": True},
             )
             catenary_params.append(result.x)  # Append optimized [c, x0, z0]
 
@@ -463,7 +463,7 @@ class CatenaryFlySurf:
         if np.linalg.norm(rotation_axis) > 1e-6:  # Avoid divide-by-zero
             rotation_axis /= np.linalg.norm(rotation_axis)
         else:
-            rotation_axis = np.array([0, 0, 0])  # No rotation needed
+            rotation_axis = np.array([0, 0, 1])  # No rotation needed
 
         rotation = R.from_rotvec(rotation_angle * rotation_axis)
 
@@ -823,7 +823,6 @@ def sampling_v1(fig, ax, flysurf, resolution, plot=False):
     if plot:
         ax.plot(intersctions[:, 0], intersctions[:, 1], intersctions[:, 2], "*")
 
-    # ax.plot(all_samples[:, 0], all_samples[:, 1], all_samples[:, 2], "*")
     if plot:
         plt.pause(0.0001)
     return all_samples
@@ -841,20 +840,21 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 21
+    mesh_size = 25
     points_coord = np.array([[mesh_size-1, mesh_size-1],
                              [mesh_size-1, 0],
                              [0, 0],
                              [0, mesh_size-1],
-                             [(mesh_size-1)//2-1, (mesh_size-1)//2-1]])
+                             [(mesh_size-1)//2, (mesh_size-1)//2]])
                             #  [2, 4],
                             #  [6, 4],
                             #  [5, 5]])
+    print(points_coord)
     
     points = np.array([[ 0.9,   0.4,   0.45],
                        [ 0.1,   0.4,   0.45],
                        [ 0.1,  -0.4,   0.45],
-                       [ 0.9,  -0.4,   0.45],
+                       [ 0.9,  -0.41,   0.45],
                        [ 0.5,   0.,    0.45]])
 
     # points = np.array([[ 0.41,   0.39,    0.15],       # 0
@@ -864,7 +864,7 @@ if __name__ == "__main__":
     #                 #    [-0.19,   0.01,     0.2],
     #                 #    [ 0.21,  -0.02,     0.1],
     #                    [0.04,    0.07,    -0.1]])
-    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1/(mesh_size-1), num_sample_per_curve=mesh_size+1)
+    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1.0/(mesh_size-1), num_sample_per_curve=mesh_size+1)
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=90, azim=-90)
@@ -873,9 +873,9 @@ if __name__ == "__main__":
     for i in range(10000):
         ax.clear()
         time_start = time.time()
-        points[1, 2] += 0.05*oscillation(1.5*i)
-        points[3, 2] += 0.07*oscillation(i+5)
-        points[3, 2] -= 0.05*oscillation(2.0*i+3)
+        points[1, 2] += 0.1*oscillation(1.5*i)
+        points[3, 2] += 0.1*oscillation(i+5)
+        points[3, 2] -= 0.1*oscillation(2.0*i+3)
         # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
         flysurf.update(points_coord, points)
         print(time.time() - time_start)
