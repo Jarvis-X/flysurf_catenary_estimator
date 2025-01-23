@@ -161,7 +161,7 @@ class CatenaryFlySurf:
         v = (dot00 * dot12 - dot01 * dot02) / denom
 
         # Check if point is inside the triangle
-        return (u > 0) and (v > 0) and (u + v < 1)
+        return (u >= 0) and (v >= 0) and (u + v <= 1)
 
     def _catenary_surface(self, params, x, y):
         a, x0, y0, z0 = params
@@ -269,11 +269,10 @@ class CatenaryFlySurf:
         triA and triB are lists of 2D or 3D points (or after projection).
         """
         # For each vertex in triA, check if it's inside triB
-        # If 3D, you might need to project them onto a common plane or handle them in 3D if they're guaranteed to be co-planar
         for pt in triA:
-            if self._barycentric_test(pt, triB[0], triB[1], triB[2]):
-                return True
-        return False
+            if not self._barycentric_test(pt, triB[0], triB[1], triB[2]):
+                return False
+        return True
 
     def point_in_triangle(self, pt, v1, v2, v3):
         """
@@ -356,7 +355,7 @@ class CatenaryFlySurf:
                 bounds=[(1e-2, 5), (None, None), (None, None)],  # Ensure c > 0
                 method='L-BFGS-B',
                 jac=True,
-                options={"maxiter": 1000, "disp": True},
+                options={"maxiter": 1000, "disp": False},
             )
             catenary_params.append(result.x)  # Append optimized [c, x0, z0]
 
