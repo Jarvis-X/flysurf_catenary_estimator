@@ -27,7 +27,7 @@ christmas_cmap = mcolors.LinearSegmentedColormap.from_list("christmas", christma
 
 
 class CatenaryFlySurf:
-    def __init__(self, lc, lr, l_cell, num_sample_per_curve=5):
+    def __init__(self, lc, lr, l_cell, num_sample_per_curve=10):
         self.lc = lc
         self.lr = lr
         self.num_points = lc*lr
@@ -755,14 +755,14 @@ def sampling_v1(fig, ax, flysurf, resolution, plot=False):
         c, x0, z0 = catenary_param
         dist, rotation, translation, samples_per_connection = other_data
 
-        x_end = np.linalg.norm(samples_per_connection[-1][:2] - samples_per_connection[0][:2])
+        # x_end = np.linalg.norm(samples_per_connection[-1][:2] - samples_per_connection[0][:2])
 
-        # Plot the full catenary curve
-        x_full = np.linspace(x_end/resolution, x_end*(resolution-1)/resolution, resolution)  # sampling
-        z_full = c * np.cosh((x_full - x0) / c) + z0
-        y_full = np.zeros_like(x_full)
-        full_curve_local = np.vstack((x_full, y_full, z_full)).T
-        full_curve_global = rotation.inv().apply(full_curve_local) + translation
+        # # Plot the full catenary curve
+        # x_full = np.linspace(x_end/resolution, x_end*(resolution-1)/resolution, resolution)  # sampling
+        # z_full = c * np.cosh((x_full - x0) / c) + z0
+        # y_full = np.zeros_like(x_full)
+        # full_curve_local = np.vstack((x_full, y_full, z_full)).T
+        full_curve_global = samples_per_connection[1:len(samples_per_connection)-1]
 
         # SECOND: four sides
         if i == 0:
@@ -864,7 +864,7 @@ if __name__ == "__main__":
                        [0.04,    0.07,    -0.1]])
 
     mesh_size = 9
-    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 0.15)
+    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 0.15, num_sample_per_curve=mesh_size+1)
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=90, azim=-90)
