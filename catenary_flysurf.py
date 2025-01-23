@@ -66,7 +66,10 @@ class CatenaryFlySurf:
         # check the discrete distance from the center of the mesh to the lifting point
         dist = np.sum(np.abs(points_coord - (points_coord.min(axis=0) + points_coord.max(axis=0))/2), axis=1)
         # normalize the height between 0 and 1
-        height_norm = (points_position[:, 2] - points_position[:, 2].min()) / (points_position[:, 2].max() - points_position[:, 2].min())
+        if abs(points_position[:, 2].max() - points_position[:, 2].min()) < 1e-6:
+            height_norm = np.zeros_like(dist)
+        else:
+            height_norm = (points_position[:, 2] - points_position[:, 2].min()) / (points_position[:, 2].max() - points_position[:, 2].min())
         order_of_points = np.argsort(dist-height_norm)
         # order_of_points = np.argsort(- points_position[:, -1])
 
@@ -352,7 +355,7 @@ class CatenaryFlySurf:
                 self._objective_with_gradient,
                 guesses[i],
                 args=(x1, z1, x2, z2, length),
-                bounds=[(1e-2, 5), (None, None), (None, None)],  # Ensure c > 0
+                bounds=[(1e-2, 10), (None, None), (None, None)],  # Ensure c > 0
                 method='L-BFGS-B',
                 jac=True,
                 options={"maxiter": 1000, "disp": False},
@@ -459,6 +462,9 @@ class CatenaryFlySurf:
         x_axis = np.array([1, 0, 0])
         rotation_axis = np.cross(direction, x_axis)
         rotation_angle = np.arccos(np.dot(direction, x_axis))
+        if abs(rotation_angle) < 1e-6:  # Avoid divide-by-zero
+            rotation_angle = 1e-6*((rotation_angle > 0)-0.5)
+
         if np.linalg.norm(rotation_axis) > 1e-6:  # Avoid divide-by-zero
             rotation_axis /= np.linalg.norm(rotation_axis)
         else:
@@ -848,12 +854,11 @@ if __name__ == "__main__":
                             #  [2, 4],
                             #  [6, 4],
                             #  [5, 5]])
-    print(points_coord)
     
     points = np.array([[ 0.9,   0.4,   0.45],
                        [ 0.1,   0.4,   0.45],
                        [ 0.1,  -0.4,   0.45],
-                       [ 0.9,  -0.41,   0.45],
+                       [ 0.9,  -0.4,   0.45],
                        [ 0.5,   0.,    0.45]])
 
     # points = np.array([[ 0.41,   0.39,    0.15],       # 0
@@ -872,9 +877,9 @@ if __name__ == "__main__":
     for i in range(10000):
         ax.clear()
         time_start = time.time()
-        points[1, 2] += 0.1*oscillation(1.5*i)
-        points[3, 2] += 0.1*oscillation(i+5)
-        points[3, 2] -= 0.1*oscillation(2.0*i+3)
+        # points[1, 2] += 0.1*oscillation(1.5*i)
+        # points[3, 2] += 0.1*oscillation(i+5)
+        # points[3, 2] -= 0.1*oscillation(2.0*i+3)
         # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
         flysurf.update(points_coord, points)
         print(time.time() - time_start)
@@ -889,5 +894,5 @@ if __name__ == "__main__":
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
         plt.pause(0.0001)
-        # input()
+        input()
 
