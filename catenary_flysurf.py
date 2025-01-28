@@ -71,7 +71,6 @@ class CatenaryFlySurf:
         else:
             height_norm = (points_position[:, 2] - points_position[:, 2].min()) / (points_position[:, 2].max() - points_position[:, 2].min())
         order_of_points = np.argsort(dist-height_norm)
-        # order_of_points = np.argsort(- points_position[:, -1])
 
         points = points_position[order_of_points]
         network_coords = points_coord[order_of_points]
@@ -220,7 +219,11 @@ class CatenaryFlySurf:
                     # print([network_coords[i], network_coords[j]])
                     coord1 = int(self._coord2index(network_coords[i]))
                     coord2 = int(self._coord2index(network_coords[j]))
-                    edges[tuple(sorted((coord1, coord2)))] = points_array[i, :], points_array[j, :]
+                    key = [coord1, coord2]
+                    val = [points_array[i, :], points_array[j, :]]
+                    key, val = zip(*sorted(zip(key, val)))
+                    key = tuple(key)
+                    edges[key] = val
                     local_indices = tuple(sorted((i, j)))
                     edges_set.add(local_indices)
 
@@ -735,23 +738,22 @@ def sampling_v1(fig, ax, flysurf, resolution, plot=False):
     """
     # collection of all samples
     # FIRST: Four corners
-    num_side_samples = resolution+2
-    all_samples = np.zeros((num_side_samples**2, 3))
+    all_samples = np.zeros((resolution**2, 3))
     # upper-right
     # upper-left
     # lower-left
     # lower-right
-    all_samples[[num_side_samples**2-1, 
-                 num_side_samples**2-num_side_samples,
-                 0, num_side_samples-1], :] = points[0:4, :]
+    all_samples[[resolution**2-1, 
+                 resolution**2-resolution,
+                 0, resolution-1], :] = points[0:4, :]
     
     if plot:
         ax.plot(points[0:4, 0], points[0:4, 1], points[0:4, 2], "*")
 
-    four_outermost_edges = [(0, resolution),  # bottom
-                            (resolution, (resolution+1)**2-1),  # right
-                            ((resolution+1)*resolution, (resolution+1)**2-1),  # top
-                            (0, (resolution+1)*resolution)]  # left
+    four_outermost_edges = [(0, resolution-1),  # bottom
+                            (resolution-1, (resolution)**2-1),  # right
+                            ((resolution-1)*resolution, resolution**2-1),  # top
+                            (0, (resolution-1)*resolution)]  # left
     
     line_seg_points = []
     for i, connection in enumerate(four_outermost_edges):
@@ -764,13 +766,13 @@ def sampling_v1(fig, ax, flysurf, resolution, plot=False):
 
         # SECOND: four sides
         if i == 0:
-            all_samples[1:num_side_samples-1, :] = full_curve_global
+            all_samples[1:resolution-1, :] = full_curve_global
         elif i == 1:
-            all_samples[range(num_side_samples*2 - 1, num_side_samples**2-1, num_side_samples), :] = full_curve_global
+            all_samples[range(resolution*2 - 1, resolution**2-1, resolution), :] = full_curve_global
         elif i == 2:
-            all_samples[(num_side_samples-1)*num_side_samples+1:num_side_samples**2-1, :] = full_curve_global
+            all_samples[(resolution-1)*resolution+1 : resolution**2-1, :] = full_curve_global
         elif i == 3:
-            all_samples[range(num_side_samples, (num_side_samples-2)*num_side_samples+1, num_side_samples), :] = full_curve_global
+            all_samples[range(resolution, (resolution-1)*resolution, resolution), :] = full_curve_global
 
         line_seg_points.append(full_curve_global[:, 0:2])
         if plot:
@@ -782,16 +784,17 @@ def sampling_v1(fig, ax, flysurf, resolution, plot=False):
             )
 
     line_pairs = [[line_seg_points[1], line_seg_points[3]], [line_seg_points[0], line_seg_points[2]]]
-    S = [np.zeros((resolution, 2, 2)), np.zeros((resolution, 2, 2))]
+    S = [np.zeros((resolution-2, 2, 2)), np.zeros((resolution-2, 2, 2))]
     for i, points_pair in enumerate(line_pairs):
         points1, points2 = points_pair
         if not compute_intersection(points1[0], points2[0], points1[-1], points2[-1]) is None:
             # let's see how we align the points on the two segments
             points1 = points1[::-1]
-        for j in range(resolution):
+        for j in range(resolution-2):
             S[i][j, 0, :] = points1[j, :]
             S[i][j, 1, :] = points2[j, :]
     
+    # print(S[0], S[1])
     intersctions = find_all_intersections_batch(S[0], S[1])
 
     surf_info = []
@@ -824,7 +827,7 @@ def sampling_v1(fig, ax, flysurf, resolution, plot=False):
     # THIRD: inner surfaces
     intersctions = np.column_stack((intersctions, z_vals))
 
-    all_samples[[i*num_side_samples + j for i in range(1, num_side_samples-1) for j in range(1, num_side_samples -1)], :] = intersctions
+    all_samples[[i*resolution + j for i in range(1, resolution-1) for j in range(1, resolution - 1)], :] = intersctions
     if plot:
         ax.plot(intersctions[:, 0], intersctions[:, 1], intersctions[:, 2], "*")
 
@@ -832,8 +835,39 @@ def sampling_v1(fig, ax, flysurf, resolution, plot=False):
         plt.pause(0.0001)
     return all_samples
 
+
 def oscillation(i):
     return np.sin(i*np.pi/100)*0.01
+
+
+def Euler_distance_points(rows,cols,states):
+    states_reshaped = states.reshape((rows, cols, 3))  # Shape (9, 9, 3)
+
+    # Initialize list to store distances
+    distances = []
+
+    # Compute distances for adjacent points (right and down)
+    for i in range(rows):
+        for j in range(cols):
+            # Current point
+            current_point = states_reshaped[i, j]
+
+            # Right neighbor (if not on the last column)
+            if j < cols - 1:
+                right_point = states_reshaped[i, j + 1]
+                distance = np.linalg.norm(current_point - right_point)
+                distances.append(distance)
+
+            # Downward neighbor (if not on the last row)
+            if i < rows - 1:
+                down_point = states_reshaped[i + 1, j]
+                distance = np.linalg.norm(current_point - down_point)
+                distances.append(distance)
+
+    # Calculate the average distance
+    average_distance = np.mean(distances)
+
+    return average_distance
 
 
 if __name__ == "__main__":
@@ -845,7 +879,7 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 25
+    mesh_size = 43 # number of samples on the outermost sides
     points_coord = np.array([[mesh_size-1, mesh_size-1],
                              [mesh_size-1, 0],
                              [0, 0],
@@ -868,7 +902,7 @@ if __name__ == "__main__":
     #                 #    [-0.19,   0.01,     0.2],
     #                 #    [ 0.21,  -0.02,     0.1],
     #                    [0.04,    0.07,    -0.1]])
-    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1.0/(mesh_size-1), num_sample_per_curve=mesh_size+1)
+    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1.0/(mesh_size-1), num_sample_per_curve=mesh_size)
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=90, azim=-90)
@@ -877,22 +911,25 @@ if __name__ == "__main__":
     for i in range(10000):
         ax.clear()
         time_start = time.time()
-        # points[1, 2] += 0.1*oscillation(1.5*i)
-        # points[3, 2] += 0.1*oscillation(i+5)
-        # points[3, 2] -= 0.1*oscillation(2.0*i+3)
+        # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
+        # points += random_array
+        points[1, 0] += 0.2*oscillation(1.5*i)
+        points[3, 1] += 0.25*oscillation(i+5)
+        points[3, 2] -= 0.3*oscillation(2.0*i+3)
         # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
         flysurf.update(points_coord, points)
-        print(time.time() - time_start)
-        # visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=10)
+        print("elapsed time:", time.time() - time_start)
+        # visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=25)
 
-        all_samples = sampling_v1(fig, ax, flysurf, mesh_size-1)
+        all_samples = sampling_v1(fig, ax, flysurf, mesh_size)
 
-        # print(all_samples)
+        # print(all_samples.shape)
         ax.plot(all_samples[0:2, 0], all_samples[0:2, 1], all_samples[0:2, 2], "*")
         ax.plot(all_samples[1:, 0], all_samples[1:, 1], all_samples[1:, 2], "*")
         ax.set_xlabel("X")
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
         plt.pause(0.0001)
-        input()
+        print(Euler_distance_points(mesh_size, mesh_size, all_samples))
+        # input()
 
