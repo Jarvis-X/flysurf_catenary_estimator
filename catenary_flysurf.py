@@ -731,113 +731,167 @@ def find_all_intersections_batch(S1, S2):
     return intersections.reshape(-1, 2)
 
 
-def sampling_v1(fig, ax, flysurf, resolution, plot=False):
-    """ NOTE:
-        We have to ensure that the 4 corners of the mesh are 
-        ALWAYS giving us four active ridges
-    """
-    # collection of all samples
-    # FIRST: Four corners
-    all_samples = np.zeros((resolution**2, 3))
-    # upper-right
-    # upper-left
-    # lower-left
-    # lower-right
-    all_samples[[resolution**2-1, 
-                 resolution**2-resolution,
-                 0, resolution-1], :] = points[0:4, :]
-    
-    if plot:
-        ax.plot(points[0:4, 0], points[0:4, 1], points[0:4, 2], "*")
+class FlysurfSampler:
+    def __init__(self, flysurf, resolution, points=None):
+        self.flysurf = flysurf
+        self.resolution = resolution
+        if points is None:
+            self.filtered_samples = np.zeros((resolution**2, 3))
+        else:
+            self.filtered_samples = self.sampling_v1(None, None, points)
+        self.vel = np.zeros((resolution**2, 3))
 
-    four_outermost_edges = [(0, resolution-1),  # bottom
-                            (resolution-1, (resolution)**2-1),  # right
-                            ((resolution-1)*resolution, resolution**2-1),  # top
-                            (0, (resolution-1)*resolution)]  # left
-    
-    line_seg_points = []
-    for i, connection in enumerate(four_outermost_edges):
-        # Retrieve curve parameters and sampled points
-        curve_length, catenary_param, other_data = flysurf.catenary_curve_params[connection]
-        dist, rotation, translation, samples_per_connection = other_data
 
-        # Plot the full catenary curve
-        full_curve_global = samples_per_connection[1:len(samples_per_connection)-1]
+    def sampling_v1(self, fig, ax, points, plot=False):
+        """ NOTE:
+            We have to ensure that the 4 corners of the mesh are 
+            ALWAYS giving us four active outermost ridges
+            @params: 
+                fig, ax: matplotlib figure handles to facilitate the visualization
+                plot: set to True to plot on the ax
+                flysurf: the flysurf instance
+                resolution: the number of samples to take on each boundary ridge
+                points: the positions of the actuated mass points on the flysurf
+        """ 
+        # collection of all samples
+        # FIRST: Four corners
+        resolution = self.resolution
+        flysurf = self.flysurf
 
-        # SECOND: four sides
-        if i == 0:
-            all_samples[1:resolution-1, :] = full_curve_global
-        elif i == 1:
-            all_samples[range(resolution*2 - 1, resolution**2-1, resolution), :] = full_curve_global
-        elif i == 2:
-            all_samples[(resolution-1)*resolution+1 : resolution**2-1, :] = full_curve_global
-        elif i == 3:
-            all_samples[range(resolution, (resolution-1)*resolution, resolution), :] = full_curve_global
-
-        line_seg_points.append(full_curve_global[:, 0:2])
-        if plot:
-            ax.plot(
-                full_curve_global[:, 0],
-                full_curve_global[:, 1],
-                full_curve_global[:, 2],
-                "*"
-            )
-
-    line_pairs = [[line_seg_points[1], line_seg_points[3]], [line_seg_points[0], line_seg_points[2]]]
-    S = [np.zeros((resolution-2, 2, 2)), np.zeros((resolution-2, 2, 2))]
-    for i, points_pair in enumerate(line_pairs):
-        points1, points2 = points_pair
-        if not compute_intersection(points1[0], points2[0], points1[-1], points2[-1]) is None:
-            # let's see how we align the points on the two segments
-            points1 = points1[::-1]
-        for j in range(resolution-2):
-            S[i][j, 0, :] = points1[j, :]
-            S[i][j, 1, :] = points2[j, :]
-    
-    # print(S[0], S[1])
-    intersctions = find_all_intersections_batch(S[0], S[1])
-
-    surf_info = []
-    for i, surface in enumerate(flysurf.active_surface):
-        num_edges = len(surface)
-        c, x, y, z = flysurf.catenary_surface_params[surface]
-        surf_corners = []
-        for j in range(num_edges):
-            for k in range(j + 1, num_edges):
-                edge = tuple(sorted((surface[j], surface[k])))
-                for v in flysurf.active_ridge[edge]:
-                    good = True
-                    for p in surf_corners:
-                        if np.allclose(v, p):
-                            good = False
-                            break
-                    if good:
-                        surf_corners.append(v)
+        all_samples = np.zeros((resolution**2, 3))
+        # upper-right
+        # upper-left
+        # lower-left
+        # lower-right
+        all_samples[[resolution**2-1, 
+                    resolution**2-resolution,
+                    0, resolution-1], :] = points[0:4, :]
         
-        surf_info.append((surf_corners, [c, x, y, z]))
+        if plot:
+            ax.plot(points[0:4, 0], points[0:4, 1], points[0:4, 2], "*")
 
-    z_vals = []
-    for point in intersctions:
-        for surf_corners, surf_params in surf_info:
-            c, x, y, z = surf_params
-            if flysurf._barycentric_test(point, surf_corners[0][:2], surf_corners[1][:2], surf_corners[2][:2]):
-                z_vals.append(flysurf._catenary_surface((c, x, y, z), point[0], point[1]))
-                break
+        four_outermost_edges = [(0, resolution-1),  # bottom
+                                (resolution-1, (resolution)**2-1),  # right
+                                ((resolution-1)*resolution, resolution**2-1),  # top
+                                (0, (resolution-1)*resolution)]  # left
+        
+        line_seg_points = []
+        for i, connection in enumerate(four_outermost_edges):
+            # Retrieve curve parameters and sampled points
+            curve_length, catenary_param, other_data = flysurf.catenary_curve_params[connection]
+            dist, rotation, translation, samples_per_connection = other_data
+
+            # Plot the full catenary curve
+            full_curve_global = samples_per_connection[1:len(samples_per_connection)-1]
+
+            # SECOND: four sides
+            if i == 0:
+                all_samples[1:resolution-1, :] = full_curve_global
+            elif i == 1:
+                all_samples[range(resolution*2 - 1, resolution**2-1, resolution), :] = full_curve_global
+            elif i == 2:
+                all_samples[(resolution-1)*resolution+1 : resolution**2-1, :] = full_curve_global
+            elif i == 3:
+                all_samples[range(resolution, (resolution-1)*resolution, resolution), :] = full_curve_global
+
+            line_seg_points.append(full_curve_global[:, 0:2])
+            if plot:
+                ax.plot(
+                    full_curve_global[:, 0],
+                    full_curve_global[:, 1],
+                    full_curve_global[:, 2],
+                    "*"
+                )
+
+        line_pairs = [[line_seg_points[1], line_seg_points[3]], [line_seg_points[0], line_seg_points[2]]]
+        S = [np.zeros((resolution-2, 2, 2)), np.zeros((resolution-2, 2, 2))]
+        for i, points_pair in enumerate(line_pairs):
+            points1, points2 = points_pair
+            if not compute_intersection(points1[0], points2[0], points1[-1], points2[-1]) is None:
+                # let's see how we align the points on the two segments
+                points1 = points1[::-1]
+            for j in range(resolution-2):
+                S[i][j, 0, :] = points1[j, :]
+                S[i][j, 1, :] = points2[j, :]
+        
+        # print(S[0], S[1])
+        intersctions = find_all_intersections_batch(S[0], S[1])
+
+        surf_info = []
+        for i, surface in enumerate(flysurf.active_surface):
+            num_edges = len(surface)
+            c, x, y, z = flysurf.catenary_surface_params[surface]
+            surf_corners = []
+            for j in range(num_edges):
+                for k in range(j + 1, num_edges):
+                    edge = tuple(sorted((surface[j], surface[k])))
+                    for v in flysurf.active_ridge[edge]:
+                        good = True
+                        for p in surf_corners:
+                            if np.allclose(v, p):
+                                good = False
+                                break
+                        if good:
+                            surf_corners.append(v)
+            
+            surf_info.append((surf_corners, [c, x, y, z]))
+
+        z_vals = []
+        for point in intersctions:
+            for surf_corners, surf_params in surf_info:
+                c, x, y, z = surf_params
+                if flysurf._barycentric_test(point, surf_corners[0][:2], surf_corners[1][:2], surf_corners[2][:2]):
+                    z_vals.append(flysurf._catenary_surface((c, x, y, z), point[0], point[1]))
+                    break
+        
+        # THIRD: inner surfaces
+        intersctions = np.column_stack((intersctions, z_vals))
+
+        all_samples[[i*resolution + j for i in range(1, resolution-1) for j in range(1, resolution - 1)], :] = intersctions
+        if plot:
+            ax.plot(intersctions[:, 0], intersctions[:, 1], intersctions[:, 2], "*")
+
+        if plot:
+            plt.pause(0.0001)
+        return all_samples
     
-    # THIRD: inner surfaces
-    intersctions = np.column_stack((intersctions, z_vals))
-
-    all_samples[[i*resolution + j for i in range(1, resolution-1) for j in range(1, resolution - 1)], :] = intersctions
-    if plot:
-        ax.plot(intersctions[:, 0], intersctions[:, 1], intersctions[:, 2], "*")
-
-    if plot:
-        plt.pause(0.0001)
-    return all_samples
+    
+    def smooth_particle_cloud(self, measurements, L, dt, alpha=0.5):
+        """
+        Smooth a cloud of particle trajectories with Lipschitz continuity constraints.
+        
+        Args:
+            measurements: Array of shape (n_particles, n_steps, 3) containing noisy 3D positions.
+            L: Lipschitz constant (maximum velocity magnitude).
+            dt: Time step between consecutive measurements.
+            alpha: Smoothing factor (0 < alpha < 1). Smaller values = more smoothing.
+        
+        Returns:
+            smoothed: Array of shape (n_particles, n_steps, 3) containing smoothed positions.
+        """
+        n_particles, _ = measurements.shape
+        max_step = L * dt  # Maximum allowed displacement per step
+        
+        # Compute raw delta between current measurement and previous smoothed position
+        raw_delta = measurements - self.filtered_samples
+        step = alpha * raw_delta
+        
+        # Compute norms of steps for all particles
+        step_norms = np.linalg.norm(step, axis=1, keepdims=True)  # Shape: (n_particles, 1)
+        step_norms += 1e-3*(step_norms < 1e-3) # to overcome divided-by-zero problem
+        
+        # Clamp steps exceeding max_step
+        over_limit = step_norms > max_step
+        self.vel = np.where(over_limit, (step / step_norms) * max_step, step)
+        
+        # Update smoothed positions
+        self.filtered_samples += self.vel
+        
+        return self.filtered_samples
 
 
 def oscillation(i):
-    return np.sin(i*np.pi/100)*0.01
+    return np.sin(i*np.pi/100)*0.05
 
 
 def Euler_distance_points(rows,cols,states):
@@ -870,7 +924,37 @@ def Euler_distance_points(rows,cols,states):
     return average_distance
 
 
+def average_hausdorff_distance(points_a: np.ndarray, points_b: np.ndarray) -> float:
+    """
+    Computes the average Hausdorff distance between two sets of 3D points.
+
+    Parameters:
+        points_a (np.ndarray): An ndarray of shape (N, 3) representing the first set of 3D points.
+        points_b (np.ndarray): An ndarray of shape (M, 3) representing the second set of 3D points.
+
+    Returns:
+        float: The average Hausdorff distance between the two sets of points.
+    """
+    if points_a.shape[1] != 3 or points_b.shape[1] != 3:
+        raise ValueError("Both input arrays must have 3 columns representing 3D points.")
+
+    # Compute pairwise distances
+    d_matrix = distance.cdist(points_a, points_b)
+
+    # Compute directed distances
+    d_ab = np.mean(np.min(d_matrix, axis=1))  # Average of minimum distances from A to B
+    d_ba = np.mean(np.min(d_matrix, axis=0))  # Average of minimum distances from B to A
+
+    # Average Hausdorff distance
+    return (d_ab + d_ba) / 2
+
+
 if __name__ == "__main__":
+    vel_hist = []
+    vel_raw_hist = []
+    dt = 0.05
+    max_speed = 2.0
+
     """ NOTE: 
         Please make sure the first four points are the four outermost
         corners of the mesh, AND
@@ -879,7 +963,7 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 43 # number of samples on the outermost sides
+    mesh_size = 21 # number of samples on the outermost sides
     points_coord = np.array([[mesh_size-1, mesh_size-1],
                              [mesh_size-1, 0],
                              [0, 0],
@@ -903,33 +987,71 @@ if __name__ == "__main__":
     #                 #    [ 0.21,  -0.02,     0.1],
     #                    [0.04,    0.07,    -0.1]])
     flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1.0/(mesh_size-1), num_sample_per_curve=mesh_size)
+    flysurf.update(points_coord, points)
+    sampler = FlysurfSampler(flysurf, mesh_size, points)
+
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=90, azim=-90)
     
 
-    for i in range(10000):
+    for i in range(200):
         ax.clear()
-        time_start = time.time()
-        # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
-        # points += random_array
-        points[1, 0] += 0.2*oscillation(1.5*i)
-        points[3, 1] += 0.25*oscillation(i+5)
-        points[3, 2] -= 0.3*oscillation(2.0*i+3)
-        # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
-        flysurf.update(points_coord, points)
-        print("elapsed time:", time.time() - time_start)
-        # visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=25)
-
-        all_samples = sampling_v1(fig, ax, flysurf, mesh_size)
-
-        # print(all_samples.shape)
-        ax.plot(all_samples[0:2, 0], all_samples[0:2, 1], all_samples[0:2, 2], "*")
-        ax.plot(all_samples[1:, 0], all_samples[1:, 1], all_samples[1:, 2], "*")
         ax.set_xlabel("X")
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
+        ax.set_xlim(0, 1.5)
+        ax.set_ylim(0, 1.5)
+        ax.set_zlim(-0.5, 0.5)
+        # time_start = time.time()
+        # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
+        # points += random_array
+        # points[0, 0] += 0.87*oscillation(5.0*i)
+        # points[1, 1] += 0.91*oscillation(7.0*i+1)
+        # points[2, 2] -= 0.47*oscillation(8.0*i+1.74)
+        # points[3, 1] += 0.75*oscillation(6.0*i+4.1)
+        # points[4, 2] -= 0.81*oscillation(7.5*i+3)
+        points[0, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[1, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[2, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[3, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[4, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        # points += np.random.normal(loc=0, scale=0.005, size=points.shape)
+
+        # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
+        sampler.flysurf.update(points_coord, points)
+        # print("elapsed time:", time.time() - time_start)
+        # visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=25)
+
+        all_samples = sampler.sampling_v1(fig, ax, points)
+        vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:,1]))
+
+        filtered_points = sampler.smooth_particle_cloud(all_samples, max_speed, dt)
+        vel_hist.append(np.linalg.norm(sampler.vel[:,1]))
+
+        # Before filter
+        # ax.plot(all_samples[:, 0], all_samples[:, 1], all_samples[:, 2], "*")
+        # 
+        unfiltered_samples_rows = all_samples.reshape((mesh_size, mesh_size, 3))
+
+        # for i in range(unfiltered_samples_rows.shape[0]):
+        #     ax.plot(unfiltered_samples_rows[i, :, 0], unfiltered_samples_rows[i, :, 1], unfiltered_samples_rows[i, :, 2], "*-")
+        # plt.pause(0.0001)
+
+        # After filter
+        # ax.plot(filtered_points[:, 0], filtered_points[:, 1], filtered_points[:, 2], "*")
+        # plt.pause(0.0001)
+        filtered_samples_rows = filtered_points.reshape((mesh_size, mesh_size, 3))
+        for i in range(filtered_samples_rows.shape[0]):
+            ax.plot(filtered_samples_rows[i, :, 0], filtered_samples_rows[i, :, 1], filtered_samples_rows[i, :, 2], "*-")
         plt.pause(0.0001)
-        print(Euler_distance_points(mesh_size, mesh_size, all_samples))
+
+        # print(average_hausdorff_distance(all_samples, filtered_points))
         # input()
 
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.plot(vel_raw_hist, "r")
+    ax.plot(vel_hist, "b")
+    plt.pause(0.0001)
+    input()
