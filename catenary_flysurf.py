@@ -26,6 +26,53 @@ christmas_colors = [
 christmas_cmap = mcolors.LinearSegmentedColormap.from_list("christmas", christmas_colors, N=256)
 
 
+def barycentric_test_with_distance(point, p1, p2, p3):
+    # Convert all points to numpy arrays
+    p1 = np.array(p1)
+    p2 = np.array(p2)
+    p3 = np.array(p3)
+    point = np.array(point)
+
+    v0 = p3 - p1
+    v1 = p2 - p1
+    v2 = point - p1
+
+    # Compute dot products
+    dot00 = np.dot(v0, v0)
+    dot01 = np.dot(v0, v1)
+    dot02 = np.dot(v0, v2)
+    dot11 = np.dot(v1, v1)
+    dot12 = np.dot(v1, v2)
+
+    denom = dot00 * dot11 - dot01 ** 2
+    is_inside = False
+
+    if denom != 0:
+        # Compute barycentric coordinates
+        u = (dot11 * dot02 - dot01 * dot12) / denom
+        v = (dot00 * dot12 - dot01 * dot02) / denom
+        is_inside = (u >= 0) and (v >= 0) and (u + v <= 1)
+
+    if is_inside:
+        return 0.0  # Point is inside the triangle
+    else:
+        # Helper function to compute distance from a point to a line segment
+        def distance_to_segment(P, A, B):
+            AP = P - A
+            AB = B - A
+            t = np.dot(AP, AB) / np.dot(AB, AB)
+            t_clamped = np.clip(t, 0.0, 1.0)
+            closest_point = A + t_clamped * AB
+            return np.linalg.norm(P - closest_point)
+
+        # Compute distances to all three edges of the triangle
+        d1 = distance_to_segment(point, p1, p2)
+        d2 = distance_to_segment(point, p2, p3)
+        d3 = distance_to_segment(point, p3, p1)
+
+        return min(d1, d2, d3)  # Minimum distance to the triangle
+
+
 class CatenaryFlySurf:
     def __init__(self, lc, lr, l_cell, num_sample_per_curve=10):
         self.lc = lc
@@ -142,28 +189,7 @@ class CatenaryFlySurf:
         return x_inside.reshape(-1, 1), y_inside.reshape(-1, 1)
 
     def _barycentric_test(self, point, p1, p2, p3):
-        # Convert triangle vertices and point to numpy arrays
-        v0 = np.array(p3) - np.array(p1)
-        v1 = np.array(p2) - np.array(p1)
-        v2 = np.array(point) - np.array(p1)
-
-        # Compute dot products
-        dot00 = np.dot(v0, v0)
-        dot01 = np.dot(v0, v1)
-        dot02 = np.dot(v0, v2)
-        dot11 = np.dot(v1, v1)
-        dot12 = np.dot(v1, v2)
-
-        # Compute barycentric coordinates
-        denom = dot00 * dot11 - dot01 * dot01
-        if denom == 0:
-            return False  # Degenerate triangle
-
-        u = (dot11 * dot02 - dot01 * dot12) / denom
-        v = (dot00 * dot12 - dot01 * dot02) / denom
-
-        # Check if point is inside the triangle
-        return (u >= 0) and (v >= 0) and (u + v <= 1)
+        return barycentric_test_with_distance(point, p1, p2, p3) == 0
 
     def _catenary_surface(self, params, x, y):
         a, x0, y0, z0 = params
@@ -771,7 +797,7 @@ class FlysurfSampler:
             ax.plot(points[0:4, 0], points[0:4, 1], points[0:4, 2], "*")
 
         four_outermost_edges = [(0, resolution-1),  # bottom
-                                (resolution-1, (resolution)**2-1),  # right
+                                (resolution-1, resolution**2-1),  # right
                                 ((resolution-1)*resolution, resolution**2-1),  # top
                                 (0, (resolution-1)*resolution)]  # left
         
@@ -815,7 +841,7 @@ class FlysurfSampler:
                 S[i][j, 1, :] = points2[j, :]
         
         # print(S[0], S[1])
-        intersctions = find_all_intersections_batch(S[0], S[1])
+        intersections = find_all_intersections_batch(S[0], S[1])
 
         surf_info = []
         for i, surface in enumerate(flysurf.active_surface):
@@ -837,19 +863,27 @@ class FlysurfSampler:
             surf_info.append((surf_corners, [c, x, y, z]))
 
         z_vals = []
-        for point in intersctions:
+        for point in intersections:
+            distances = []
             for surf_corners, surf_params in surf_info:
                 c, x, y, z = surf_params
-                if flysurf._barycentric_test(point, surf_corners[0][:2], surf_corners[1][:2], surf_corners[2][:2]):
-                    z_vals.append(flysurf._catenary_surface((c, x, y, z), point[0], point[1]))
-                    break
+                barycentric_distance = barycentric_test_with_distance(point, surf_corners[0][:2], surf_corners[1][:2], surf_corners[2][:2])
+                # if barycentric_distance < 1e-9:
+                #     z_vals.append(flysurf._catenary_surface((c, x, y, z), point[0], point[1]))
+                #     break
+                # else:
+                distances.append((float(barycentric_distance), (c, x, y, z)))
+
+            # print(point, distances)
+            sorted_distances = sorted(distances, key=lambda x: x[0])
+            z_vals.append(flysurf._catenary_surface(sorted_distances[0][1], point[0], point[1]))
         
         # THIRD: inner surfaces
-        intersctions = np.column_stack((intersctions, z_vals))
+        intersections = np.column_stack((intersections, z_vals))
 
-        all_samples[[i*resolution + j for i in range(1, resolution-1) for j in range(1, resolution - 1)], :] = intersctions
+        all_samples[[i*resolution + j for i in range(1, resolution-1) for j in range(1, resolution - 1)], :] = intersections
         if plot:
-            ax.plot(intersctions[:, 0], intersctions[:, 1], intersctions[:, 2], "*")
+            ax.plot(intersections[:, 0], intersections[:, 1], intersections[:, 2], "*")
 
         if plot:
             plt.pause(0.0001)
