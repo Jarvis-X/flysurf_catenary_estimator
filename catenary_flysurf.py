@@ -836,10 +836,11 @@ class FlysurfSampler:
                             dist, rotation, translation, samples_per_connection = other_data
                             if index1 == 0:
                                 num_samples = index2 - index1 - 1
-                                if len(range(resolution//num_samples+1,resolution,resolution//num_samples)) < num_samples:
-                                    full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[resolution//num_samples-1:resolution:resolution//num_samples, :]
-                                else:
-                                    full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[resolution//num_samples+1:resolution:resolution//num_samples, :]
+                                if not num_samples == 0:
+                                    if len(range(resolution//num_samples+1,resolution,resolution//num_samples)) < num_samples:
+                                        full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[resolution//num_samples-1:resolution:resolution//num_samples, :]
+                                    else:
+                                        full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[resolution//num_samples+1:resolution:resolution//num_samples, :]
                             else:
                                 num_samples = index2 - index1
                                 full_curve_global[index1-1:index2, :] = samples_per_connection[1:resolution:resolution//num_samples, :]
@@ -1037,7 +1038,7 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 21 # number of samples on the outermost sides
+    mesh_size = 3 # number of samples on the outermost sides
     points_coord = np.array([[mesh_size-1, mesh_size-1],
                              [mesh_size-1, 0],
                              [0, 0],
@@ -1047,8 +1048,6 @@ if __name__ == "__main__":
                              [0, (mesh_size-1)//2],
                              [(mesh_size-1)//2, mesh_size-1],
                              [(mesh_size-1)//2, 0]])
-                            #  [6, 4],
-                            #  [5, 5]])
     
     points = np.array([[ 0.9,   0.4,   0.45],
                        [ 0.1,   0.4,   0.45],
