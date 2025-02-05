@@ -211,7 +211,7 @@ class CatenaryFlySurf:
         """
         # Project points to 2D by discarding the z-coordinate
         points_array = np.array(points)
-        points_2d = network_coords # points_array[:, :2]
+        points_2d = network_coords # points_array[:, :2] # 
 
         # Number of points
         n_points = points_2d.shape[0]
@@ -242,7 +242,6 @@ class CatenaryFlySurf:
                         #     higher = tuple(sorted((e1, e2)))
                         break
                 if not intersection:
-                    # print([network_coords[i], network_coords[j]])
                     coord1 = int(self._coord2index(network_coords[i]))
                     coord2 = int(self._coord2index(network_coords[j]))
                     key = [coord1, coord2]
@@ -803,13 +802,53 @@ class FlysurfSampler:
         
         line_seg_points = []
         for i, connection in enumerate(four_outermost_edges):
-            # Retrieve curve parameters and sampled points
+            # Retrieve curve parameters and sampled points                
             curve_length, catenary_param, other_data = flysurf.catenary_curve_params[connection]
-            dist, rotation, translation, samples_per_connection = other_data
+            if other_data:
+                # if the corners are directed connected
+                dist, rotation, translation, samples_per_connection = other_data
 
-            # Plot the full catenary curve
-            full_curve_global = samples_per_connection[1:len(samples_per_connection)-1]
+                # Plot the full catenary curve
+                full_curve_global = samples_per_connection[1:len(samples_per_connection)-1]
+            else:
+                # if the corners are separated by mid points on the outermost sides
+                if i == 0:
+                    possible_side_points = list(range(0, resolution))
+                elif i == 1:
+                    possible_side_points = list(range(resolution-1, resolution**2, resolution))
+                elif i == 2:
+                    possible_side_points = list(range((resolution-1)*resolution, resolution**2))
+                elif i == 3:
+                    possible_side_points = list(range(0, (resolution-1)*resolution + 1, resolution))
 
+                index1 = 0
+                full_curve_global = np.zeros_like(all_samples[1:resolution-1, :])
+
+                while index1 < len(possible_side_points)-1:
+                    index2 = index1 + 1
+                    while index2 < len(possible_side_points):
+                        point1 = possible_side_points[index1]
+                        point2 = possible_side_points[index2]
+                        connection_key = (point1, point2)
+                        curve_length, catenary_param, other_data = flysurf.catenary_curve_params[connection_key]
+                        if other_data:
+                            # Hah! We found a connection!
+                            dist, rotation, translation, samples_per_connection = other_data
+                            if index1 == 0:
+                                num_samples = index2 - index1 - 1
+                                if len(range(resolution//num_samples+1,resolution,resolution//num_samples)) < num_samples:
+                                    full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[resolution//num_samples-1:resolution:resolution//num_samples, :]
+                                else:
+                                    full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[resolution//num_samples+1:resolution:resolution//num_samples, :]
+                            else:
+                                num_samples = index2 - index1
+                                full_curve_global[index1-1:index2, :] = samples_per_connection[1:resolution:resolution//num_samples, :]
+                            index1 = index2 - 1
+                            break
+                        else:
+                            index2 += 1
+                    index1 += 1
+            
             # SECOND: four sides
             if i == 0:
                 all_samples[1:resolution-1, :] = full_curve_global
@@ -828,6 +867,7 @@ class FlysurfSampler:
                     full_curve_global[:, 2],
                     "*"
                 )
+
 
         line_pairs = [[line_seg_points[1], line_seg_points[3]], [line_seg_points[0], line_seg_points[2]]]
         S = [np.zeros((resolution-2, 2, 2)), np.zeros((resolution-2, 2, 2))]
@@ -1002,8 +1042,11 @@ if __name__ == "__main__":
                              [mesh_size-1, 0],
                              [0, 0],
                              [0, mesh_size-1],
-                             [(mesh_size-1)//2, (mesh_size-1)//2]])
-                            #  [2, 4],
+                             [(mesh_size-1)//2, (mesh_size-1)//2],
+                             [mesh_size-1, (mesh_size-1)//2],
+                             [0, (mesh_size-1)//2],
+                             [(mesh_size-1)//2, mesh_size-1],
+                             [(mesh_size-1)//2, 0]])
                             #  [6, 4],
                             #  [5, 5]])
     
@@ -1011,7 +1054,11 @@ if __name__ == "__main__":
                        [ 0.1,   0.4,   0.45],
                        [ 0.1,  -0.4,   0.45],
                        [ 0.9,  -0.4,   0.45],
-                       [ 0.5,   0.,    0.45]])
+                       [ 0.5,   0.,    0.45],
+                       [ 0.5,   0.4,   0.45],
+                       [ 0.5,  -0.4,   0.45],
+                       [ 0.9,   0.0,   0.45],
+                       [ 0.1,   0.0,   0.45]])
 
     # points = np.array([[ 0.41,   0.39,    0.15],       # 0
     #                    [-0.38,   0.42,   -0.05],     # 1
@@ -1034,28 +1081,36 @@ if __name__ == "__main__":
         ax.set_xlabel("X")
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
-        ax.set_xlim(0, 1.5)
-        ax.set_ylim(0, 1.5)
-        ax.set_zlim(-0.5, 0.5)
+        # ax.set_xlim(0, 1.5)
+        # ax.set_ylim(0, 1.5)
+        # ax.set_zlim(-0.5, 0.5)
         # time_start = time.time()
         # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
         # points += random_array
-        # points[0, 0] += 0.87*oscillation(5.0*i)
-        # points[1, 1] += 0.91*oscillation(7.0*i+1)
-        # points[2, 2] -= 0.47*oscillation(8.0*i+1.74)
-        # points[3, 1] += 0.75*oscillation(6.0*i+4.1)
-        # points[4, 2] -= 0.81*oscillation(7.5*i+3)
+        points[0, 2] += 0.17*oscillation(5.0*i)
+        points[1, 2] += 0.13*oscillation(7.0*i+1)
+        points[2, 2] -= 0.23*oscillation(8.0*i+1.74)
+        points[3, 2] += 0.31*oscillation(6.0*i+4.1)
+        points[4, 2] -= 0.41*oscillation(7.5*i+3)
+        points[5, 2] -= 0.19*oscillation(3.1*i+1.2)
+        points[6, 2] += 0.19*oscillation(5.1*i+2.0)
+        points[7, 2] -= 0.27*oscillation(0.9*i-0.5)
+        points[8, 2] += 0.13*oscillation(4.1*i-1.1)
         points[0, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
         points[1, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
         points[2, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
         points[3, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
         points[4, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[5, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[6, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[7, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[8, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
         # points += np.random.normal(loc=0, scale=0.005, size=points.shape)
 
         # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
         sampler.flysurf.update(points_coord, points)
         # print("elapsed time:", time.time() - time_start)
-        # visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=25)
+        # visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=False, num_samples=25)
 
         all_samples = sampler.sampling_v1(fig, ax, points)
         vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:,1]))
