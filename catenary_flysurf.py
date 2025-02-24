@@ -757,17 +757,17 @@ def find_all_intersections_batch(S1, S2):
 
 
 class FlysurfSampler:
-    def __init__(self, flysurf, resolution, points=None):
+    def __init__(self, flysurf, resolution, points=None, coordinates=None):
         self.flysurf = flysurf
         self.resolution = resolution
         if points is None:
             self.filtered_samples = np.zeros((resolution**2, 3))
         else:
-            self.filtered_samples = self.sampling_v1(None, None, points)
+            self.filtered_samples = self.sampling_v1(None, None, points, coordinates)
         self.vel = np.zeros((resolution**2, 3))
 
 
-    def sampling_v1(self, fig, ax, points, plot=False):
+    def sampling_v1(self, fig, ax, points, coordinates, plot=False):
         """ NOTE:
             We have to ensure that the 4 corners of the mesh are 
             ALWAYS giving us four active outermost ridges
@@ -909,10 +909,6 @@ class FlysurfSampler:
             for surf_corners, surf_params in surf_info:
                 c, x, y, z = surf_params
                 barycentric_distance = barycentric_test_with_distance(point, surf_corners[0][:2], surf_corners[1][:2], surf_corners[2][:2])
-                # if barycentric_distance < 1e-9:
-                #     z_vals.append(flysurf._catenary_surface((c, x, y, z), point[0], point[1]))
-                #     break
-                # else:
                 distances.append((float(barycentric_distance), (c, x, y, z)))
 
             # print(point, distances)
@@ -923,15 +919,24 @@ class FlysurfSampler:
         intersections = np.column_stack((intersections, z_vals))
 
         all_samples[[i*resolution + j for i in range(1, resolution-1) for j in range(1, resolution - 1)], :] = intersections
-        if plot:
-            ax.plot(intersections[:, 0], intersections[:, 1], intersections[:, 2], "*")
+
+        # Force the samples to cover the inner actuators
+        # inner_points = points[4:, :]
+        # inner_coordinates = coordinates[4:, :]
+        control_indices = []
+        for coordinate in coordinates:
+            i, j = coordinate
+            control_indices.append(i * resolution + j)
+
+        all_samples = drag_points_vectorized(all_samples, control_indices, points, sigma=np.array([0.1, 0.1, 0.1, 0.1, 0.2, 0.2, 0.2, 0.2, 0.4]))
 
         if plot:
+            ax.plot(intersections[:, 0], intersections[:, 1], intersections[:, 2], "*")
             plt.pause(0.0001)
         return all_samples
     
     
-    def smooth_particle_cloud(self, measurements, L, dt, alpha=0.5):
+    def smooth_particle_cloud(self, measurements, L, dt, alpha=0.5, filter_on=True):
         """
         Smooth a cloud of particle trajectories with Lipschitz continuity constraints.
         
@@ -940,29 +945,85 @@ class FlysurfSampler:
             L: Lipschitz constant (maximum velocity magnitude).
             dt: Time step between consecutive measurements.
             alpha: Smoothing factor (0 < alpha < 1). Smaller values = more smoothing.
+            filter_on: Enable filtering on particles when True.
         
         Returns:
             smoothed: Array of shape (n_particles, n_steps, 3) containing smoothed positions.
         """
-        n_particles, _ = measurements.shape
-        max_step = L * dt  # Maximum allowed displacement per step
-        
-        # Compute raw delta between current measurement and previous smoothed position
-        raw_delta = measurements - self.filtered_samples
-        step = alpha * raw_delta
-        
-        # Compute norms of steps for all particles
-        step_norms = np.linalg.norm(step, axis=1, keepdims=True)  # Shape: (n_particles, 1)
-        step_norms += 1e-3*(step_norms < 1e-3) # to overcome divided-by-zero problem
-        
-        # Clamp steps exceeding max_step
-        over_limit = step_norms > max_step
-        self.vel = np.where(over_limit, (step / step_norms) * max_step, step)
-        
-        # Update smoothed positions
-        self.filtered_samples += self.vel
+        if filter_on:
+            n_particles, _ = measurements.shape
+            max_step = L * dt  # Maximum allowed displacement per step
+
+            # Compute raw delta between current measurement and previous smoothed position
+            raw_delta = measurements - self.filtered_samples
+            step = alpha * raw_delta
+
+            # Compute norms of steps for all particles
+            step_norms = np.linalg.norm(step, axis=1, keepdims=True)  # Shape: (n_particles, 1)
+            step_norms += 1e-3*(step_norms < 1e-3) # to overcome divided-by-zero problem
+
+            # Clamp steps exceeding max_step
+            over_limit = step_norms > max_step
+            self.vel = np.where(over_limit, (step / step_norms) * max_step, step)
+
+            # Update smoothed positions
+            self.filtered_samples += self.vel
+        else:
+            self.vel = (measurements - self.filtered_samples)
+            self.filtered_samples = measurements
         
         return self.filtered_samples
+
+
+def drag_points_vectorized(A, control_indices, B, sigma):
+    """
+    Drag points in A based on control points and their target positions, with a per-control-point sigma.
+
+    Parameters:
+    A : ndarray of shape (n, 3)
+        The original 3D points.
+    control_indices : array-like of int
+        Indices of control points in A that are dragged.
+    B : ndarray of shape (k, 3)
+        The target positions for the control points.
+    sigma : ndarray of shape (k,)
+        Gaussian spread for each control point; smaller values make the influence more local.
+
+    Returns:
+    A_new : ndarray of shape (n, 3)
+        The updated 3D points after applying the drag.
+    """
+    # Ensure sigma is a numpy array and has proper dimensions.
+    sigma = np.asarray(sigma)
+    if sigma.ndim != 1 or sigma.shape[0] != B.shape[0]:
+        raise ValueError("sigma must be a 1D array with the same length as the number of control points in B")
+
+    # Extract control points from A and compute their displacements
+    A_control = A[control_indices]  # shape (k, 3)
+    d = B - A_control  # shape (k, 3)
+
+    # Compute differences between every point in A and each control point:
+    # diff has shape (n, k, 3)
+    diff = A[:, None, :] - A_control[None, :, :]
+
+    # Compute squared Euclidean distances, shape (n, k)
+    dist_sq = np.sum(diff ** 2, axis=2)
+
+    # Use broadcasting to compute per-control-point Gaussian weights.
+    # (sigma**2) is of shape (k,), so we add a new axis to broadcast over n.
+    weights = np.exp(-dist_sq / (sigma ** 2)[None, :])
+
+    # Compute the weighted displacement for each point in A.
+    # weights[..., None] has shape (n, k, 1), d[None, :, :] has shape (1, k, 3)
+    weighted_disp = np.sum(weights[..., None] * d[None, :, :], axis=1)
+
+    # Normalize by the sum of weights for each point to get the average displacement.
+    weight_sum = np.sum(weights, axis=1)[:, None]
+
+    # Update A with the computed displacements.
+    A_new = A + weighted_disp / weight_sum
+
+    return A_new
 
 
 def oscillation(i):
@@ -1027,8 +1088,8 @@ def average_hausdorff_distance(points_a: np.ndarray, points_b: np.ndarray) -> fl
 if __name__ == "__main__":
     vel_hist = []
     vel_raw_hist = []
-    dt = 0.05
-    max_speed = 2.0
+    dt = 0.1
+    max_speed = 0.5
 
     """ NOTE: 
         Please make sure the first four points are the four outermost
@@ -1038,7 +1099,7 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 3 # number of samples on the outermost sides
+    mesh_size = 21 # number of samples on the outermost sides
     points_coord = np.array([[mesh_size-1, mesh_size-1],
                              [mesh_size-1, 0],
                              [0, 0],
@@ -1068,42 +1129,42 @@ if __name__ == "__main__":
     #                    [0.04,    0.07,    -0.1]])
     flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1.0/(mesh_size-1), num_sample_per_curve=mesh_size)
     flysurf.update(points_coord, points)
-    sampler = FlysurfSampler(flysurf, mesh_size, points)
+    sampler = FlysurfSampler(flysurf, mesh_size, points, points_coord)
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=90, azim=-90)
     
 
-    for i in range(200):
+    for i in range(500):
         ax.clear()
         ax.set_xlabel("X")
         ax.set_ylabel("Y")
         ax.set_zlabel("Z")
-        # ax.set_xlim(0, 1.5)
-        # ax.set_ylim(0, 1.5)
-        # ax.set_zlim(-0.5, 0.5)
+        ax.set_xlim(-0.0, 1.0)
+        ax.set_ylim(-0.5, 0.5)
+        ax.set_zlim(-0.5, 0.5)
         # time_start = time.time()
         # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
         # points += random_array
         points[0, 2] += 0.17*oscillation(5.0*i)
         points[1, 2] += 0.13*oscillation(7.0*i+1)
         points[2, 2] -= 0.23*oscillation(8.0*i+1.74)
-        points[3, 2] += 0.31*oscillation(6.0*i+4.1)
-        points[4, 2] -= 0.41*oscillation(7.5*i+3)
+        points[3, 2] += 0.19*oscillation(6.0*i+4.1)
+        points[4, 2] -= 0.21*oscillation(7.5*i+3)
         points[5, 2] -= 0.19*oscillation(3.1*i+1.2)
         points[6, 2] += 0.19*oscillation(5.1*i+2.0)
-        points[7, 2] -= 0.27*oscillation(0.9*i-0.5)
+        points[7, 2] -= 0.13*oscillation(0.9*i-0.5)
         points[8, 2] += 0.13*oscillation(4.1*i-1.1)
-        points[0, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[1, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[2, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[3, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[4, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[5, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[6, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[7, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[8, :2] += 0.1*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[0, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[1, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[2, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[3, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[4, :2] += 0.015*np.array([np.cos(0.12*i), np.sin(0.12*i)])
+        points[5, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[6, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[7, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[8, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
         # points += np.random.normal(loc=0, scale=0.005, size=points.shape)
 
         # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
@@ -1111,7 +1172,7 @@ if __name__ == "__main__":
         # print("elapsed time:", time.time() - time_start)
         # visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=False, num_samples=25)
 
-        all_samples = sampler.sampling_v1(fig, ax, points)
+        all_samples = sampler.sampling_v1(fig, ax, points, coordinates=points_coord)
         vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:,1]))
 
         filtered_points = sampler.smooth_particle_cloud(all_samples, max_speed, dt)
