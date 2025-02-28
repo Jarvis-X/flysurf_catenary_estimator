@@ -9,6 +9,7 @@ import time
 from scipy.optimize import root_scalar
 import matplotlib
 from scipy.spatial import distance
+
 # matplotlib.use('tkagg')
 plt.rc('font', family='serif')
 matplotlib.rcParams['pdf.fonttype'] = 42
@@ -20,7 +21,7 @@ import matplotlib.colors as mcolors
 christmas_colors = [
     "#006400",  # DarkGreen
     "#FFFFFF",  # White
-    "#8B0000"   # DarkRed
+    "#8B0000"  # DarkRed
 ]
 # Create a linear segmented colormap from these colors
 christmas_cmap = mcolors.LinearSegmentedColormap.from_list("christmas", christmas_colors, N=256)
@@ -77,7 +78,7 @@ class CatenaryFlySurf:
     def __init__(self, lc, lr, l_cell, num_sample_per_curve=10):
         self.lc = lc
         self.lr = lr
-        self.num_points = lc*lr
+        self.num_points = lc * lr
         self.cell_length = l_cell
         self.num_samples = num_sample_per_curve
         self.active_ridge = None
@@ -88,7 +89,7 @@ class CatenaryFlySurf:
         self.catenary_surface_params = dict()  #
 
         for i in range(self.num_points):
-            for j in range(i+1, self.num_points):
+            for j in range(i + 1, self.num_points):
                 i1, j1 = self._index2coord(i)
                 i2, j2 = self._index2coord(j)
                 self.catenary_curve_params[tuple(sorted((i, j)))] = [
@@ -111,13 +112,14 @@ class CatenaryFlySurf:
         :param points_position: ndarray that specifies the position of the lifting points
         """
         # check the discrete distance from the center of the mesh to the lifting point
-        dist = np.sum(np.abs(points_coord - (points_coord.min(axis=0) + points_coord.max(axis=0))/2), axis=1)
+        dist = np.sum(np.abs(points_coord - (points_coord.min(axis=0) + points_coord.max(axis=0)) / 2), axis=1)
         # normalize the height between 0 and 1
         if abs(points_position[:, 2].max() - points_position[:, 2].min()) < 1e-6:
             height_norm = np.zeros_like(dist)
         else:
-            height_norm = (points_position[:, 2] - points_position[:, 2].min()) / (points_position[:, 2].max() - points_position[:, 2].min())
-        order_of_points = np.argsort(dist-height_norm)
+            height_norm = (points_position[:, 2] - points_position[:, 2].min()) / (
+                        points_position[:, 2].max() - points_position[:, 2].min())
+        order_of_points = np.argsort(dist - height_norm)
 
         points = points_position[order_of_points]
         network_coords = points_coord[order_of_points]
@@ -136,7 +138,7 @@ class CatenaryFlySurf:
             surface_points = np.zeros((num_edges * num_samples, 3))
             index = 0
             for j in range(num_vertices):
-                for k in range(j+1, num_vertices):
+                for k in range(j + 1, num_vertices):
                     edge = tuple(sorted((surface[j], surface[k])))
                     sample_points = self.catenary_curve_params[edge][2][-1]
                     surface_points[(index) * num_samples:(index + 1) * num_samples, :] = sample_points
@@ -179,7 +181,6 @@ class CatenaryFlySurf:
 
         # Barycentric test to check if points are inside the triangle
 
-
         inside = np.array([self._barycentric_test(point, p1, p2, p3) for point in points])
 
         # Filter points inside the triangle
@@ -211,7 +212,7 @@ class CatenaryFlySurf:
         """
         # Project points to 2D by discarding the z-coordinate
         points_array = np.array(points)
-        points_2d = network_coords # points_array[:, :2] # 
+        points_2d = network_coords  # points_array[:, :2] #
 
         # Number of points
         n_points = points_2d.shape[0]
@@ -251,7 +252,6 @@ class CatenaryFlySurf:
                     edges[key] = val
                     local_indices = tuple(sorted((i, j)))
                     edges_set.add(local_indices)
-
 
         # Generate triangle surfaces
         active_surface = []
@@ -444,7 +444,7 @@ class CatenaryFlySurf:
         error_length = L - L_cat
 
         # Objective function
-        objective_value = error_z1**2 + error_z2**2 + error_length**2
+        objective_value = error_z1 ** 2 + error_z2 ** 2 + error_length ** 2
 
         # Gradients
         dz1_dc = np.cosh((x1 - x0) / c) - (x1 - x0) / c * np.sinh((x1 - x0) / c)
@@ -491,7 +491,7 @@ class CatenaryFlySurf:
         rotation_axis = np.cross(direction, x_axis)
         rotation_angle = np.arccos(np.dot(direction, x_axis))
         if abs(rotation_angle) < 1e-6:  # Avoid divide-by-zero
-            rotation_angle = 1e-6*((rotation_angle > 0)-0.5)
+            rotation_angle = 1e-6 * ((rotation_angle > 0) - 0.5)
 
         if np.linalg.norm(rotation_axis) > 1e-6:  # Avoid divide-by-zero
             rotation_axis /= np.linalg.norm(rotation_axis)
@@ -608,12 +608,12 @@ class CatenaryFlySurf:
 
     def _coord2index(self, coord):
         i, j = coord
-        return i*self.lc + j
+        return i * self.lc + j
 
     def _index2coord(self, index: int):
         i = index // self.lc
-        j = index - i*self.lc
-        return  i, j
+        j = index - i * self.lc
+        return i, j
 
 
 def visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=10):
@@ -761,70 +761,69 @@ class FlysurfSampler:
         self.flysurf = flysurf
         self.resolution = resolution
         if points is None:
-            self.filtered_samples = np.zeros((resolution**2, 3))
+            self.filtered_samples = np.zeros((resolution ** 2, 3))
         else:
             self.filtered_samples = self.sampling_v1(None, None, points, coordinates)
-        self.vel = np.zeros((resolution**2, 3))
-
+        self.vel = np.zeros((resolution ** 2, 3))
 
     def sampling_v1(self, fig, ax, points, coordinates, plot=False):
         """ NOTE:
-            We have to ensure that the 4 corners of the mesh are 
+            We have to ensure that the 4 corners of the mesh are
             ALWAYS giving us four active outermost ridges
-            @params: 
+            @params:
                 fig, ax: matplotlib figure handles to facilitate the visualization
                 plot: set to True to plot on the ax
                 flysurf: the flysurf instance
                 resolution: the number of samples to take on each boundary ridge
                 points: the positions of the actuated mass points on the flysurf
-        """ 
+        """
         # collection of all samples
         # FIRST: Four corners
         resolution = self.resolution
         flysurf = self.flysurf
 
-        all_samples = np.zeros((resolution**2, 3))
+        all_samples = np.zeros((resolution ** 2, 3))
         # upper-right
         # upper-left
         # lower-left
         # lower-right
-        all_samples[[resolution**2-1, 
-                    resolution**2-resolution,
-                    0, resolution-1], :] = points[0:4, :]
-        
+        all_samples[[resolution ** 2 - 1,
+                     resolution ** 2 - resolution,
+                     0, resolution - 1], :] = points[0:4, :]
+
         if plot:
             ax.plot(points[0:4, 0], points[0:4, 1], points[0:4, 2], "*")
 
-        four_outermost_edges = [(0, resolution-1),  # bottom
-                                (resolution-1, resolution**2-1),  # right
-                                ((resolution-1)*resolution, resolution**2-1),  # top
-                                (0, (resolution-1)*resolution)]  # left
-        
+        four_outermost_edges = [(0, resolution - 1),  # bottom
+                                (resolution - 1, resolution ** 2 - 1),  # right
+                                ((resolution - 1) * resolution, resolution ** 2 - 1),  # top
+                                (0, (resolution - 1) * resolution)]  # left
+
         line_seg_points = []
         for i, connection in enumerate(four_outermost_edges):
-            # Retrieve curve parameters and sampled points                
+            # Retrieve curve parameters and sampled points
             curve_length, catenary_param, other_data = flysurf.catenary_curve_params[connection]
             if other_data:
                 # if the corners are directed connected
                 dist, rotation, translation, samples_per_connection = other_data
 
                 # Plot the full catenary curve
-                full_curve_global = samples_per_connection[1:len(samples_per_connection)-1]
+                full_curve_global = samples_per_connection[1:len(samples_per_connection) - 1]
             else:
                 # if the corners are separated by mid points on the outermost sides
                 if i == 0:
                     possible_side_points = list(range(0, resolution))
                 elif i == 1:
-                    possible_side_points = list(range(resolution-1, resolution**2, resolution))
+                    possible_side_points = list(range(resolution - 1, resolution ** 2, resolution))
                 elif i == 2:
-                    possible_side_points = list(range((resolution-1)*resolution, resolution**2))
+                    possible_side_points = list(range((resolution - 1) * resolution, resolution ** 2))
                 elif i == 3:
-                    possible_side_points = list(range(0, (resolution-1)*resolution + 1, resolution))
+                    possible_side_points = list(range(0, (resolution - 1) * resolution + 1, resolution))
 
                 index1 = 0
-                full_curve_global = np.zeros_like(all_samples[1:resolution-1, :])
+                full_curve_global = np.zeros_like(all_samples[1:resolution - 1, :])
 
-                while index1 < len(possible_side_points)-1:
+                while index1 < len(possible_side_points) - 1:
                     index2 = index1 + 1
                     while index2 < len(possible_side_points):
                         point1 = possible_side_points[index1]
@@ -837,28 +836,34 @@ class FlysurfSampler:
                             if index1 == 0:
                                 num_samples = index2 - index1 - 1
                                 if not num_samples == 0:
-                                    if len(range(resolution//num_samples+1,resolution,resolution//num_samples)) < num_samples:
-                                        full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[resolution//num_samples-1:resolution:resolution//num_samples, :]
+                                    if len(range(resolution // num_samples + 1, resolution,
+                                                 resolution // num_samples)) < num_samples:
+                                        full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[
+                                                                                            resolution // num_samples - 1:resolution:resolution // num_samples,
+                                                                                            :]
                                     else:
-                                        full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[resolution//num_samples+1:resolution:resolution//num_samples, :]
+                                        full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[
+                                                                                            resolution // num_samples + 1:resolution:resolution // num_samples,
+                                                                                            :]
                             else:
                                 num_samples = index2 - index1
-                                full_curve_global[index1-1:index2, :] = samples_per_connection[1:resolution:resolution//num_samples, :]
+                                full_curve_global[index1 - 1:index2, :] = samples_per_connection[
+                                                                          1:resolution:resolution // num_samples, :]
                             index1 = index2 - 1
                             break
                         else:
                             index2 += 1
                     index1 += 1
-            
+
             # SECOND: four sides
             if i == 0:
-                all_samples[1:resolution-1, :] = full_curve_global
+                all_samples[1:resolution - 1, :] = full_curve_global
             elif i == 1:
-                all_samples[range(resolution*2 - 1, resolution**2-1, resolution), :] = full_curve_global
+                all_samples[range(resolution * 2 - 1, resolution ** 2 - 1, resolution), :] = full_curve_global
             elif i == 2:
-                all_samples[(resolution-1)*resolution+1 : resolution**2-1, :] = full_curve_global
+                all_samples[(resolution - 1) * resolution + 1: resolution ** 2 - 1, :] = full_curve_global
             elif i == 3:
-                all_samples[range(resolution, (resolution-1)*resolution, resolution), :] = full_curve_global
+                all_samples[range(resolution, (resolution - 1) * resolution, resolution), :] = full_curve_global
 
             line_seg_points.append(full_curve_global[:, 0:2])
             if plot:
@@ -869,18 +874,17 @@ class FlysurfSampler:
                     "*"
                 )
 
-
         line_pairs = [[line_seg_points[1], line_seg_points[3]], [line_seg_points[0], line_seg_points[2]]]
-        S = [np.zeros((resolution-2, 2, 2)), np.zeros((resolution-2, 2, 2))]
+        S = [np.zeros((resolution - 2, 2, 2)), np.zeros((resolution - 2, 2, 2))]
         for i, points_pair in enumerate(line_pairs):
             points1, points2 = points_pair
             if not compute_intersection(points1[0], points2[0], points1[-1], points2[-1]) is None:
                 # let's see how we align the points on the two segments
                 points1 = points1[::-1]
-            for j in range(resolution-2):
+            for j in range(resolution - 2):
                 S[i][j, 0, :] = points1[j, :]
                 S[i][j, 1, :] = points2[j, :]
-        
+
         # print(S[0], S[1])
         intersections = find_all_intersections_batch(S[0], S[1])
 
@@ -900,7 +904,7 @@ class FlysurfSampler:
                                 break
                         if good:
                             surf_corners.append(v)
-            
+
             surf_info.append((surf_corners, [c, x, y, z]))
 
         z_vals = []
@@ -908,17 +912,19 @@ class FlysurfSampler:
             distances = []
             for surf_corners, surf_params in surf_info:
                 c, x, y, z = surf_params
-                barycentric_distance = barycentric_test_with_distance(point, surf_corners[0][:2], surf_corners[1][:2], surf_corners[2][:2])
+                barycentric_distance = barycentric_test_with_distance(point, surf_corners[0][:2], surf_corners[1][:2],
+                                                                      surf_corners[2][:2])
                 distances.append((float(barycentric_distance), (c, x, y, z)))
 
             # print(point, distances)
             sorted_distances = sorted(distances, key=lambda x: x[0])
             z_vals.append(flysurf._catenary_surface(sorted_distances[0][1], point[0], point[1]))
-        
+
         # THIRD: inner surfaces
         intersections = np.column_stack((intersections, z_vals))
 
-        all_samples[[i*resolution + j for i in range(1, resolution-1) for j in range(1, resolution - 1)], :] = intersections
+        all_samples[[i * resolution + j for i in range(1, resolution - 1) for j in range(1, resolution - 1)],
+        :] = intersections
 
         # Force the samples to cover the inner actuators
         # inner_points = points[4:, :]
@@ -928,25 +934,31 @@ class FlysurfSampler:
             i, j = coordinate
             control_indices.append(i * resolution + j)
 
-        all_samples = drag_points_vectorized(all_samples, control_indices, points, sigma=np.array([0.1, 0.1, 0.1, 0.1, 0.2, 0.2, 0.2, 0.2, 0.4]))
+        num_actuators = len(control_indices)
+        sigma = np.zeros((num_actuators,)) + 0.1
+        if num_actuators > 4:
+            sigma[4] += 0.2
+            if num_actuators > 5:
+                sigma[5:] += 0.1
+        all_samples = drag_points_vectorized(all_samples, control_indices, points,
+                                             sigma=sigma)
 
         if plot:
             ax.plot(intersections[:, 0], intersections[:, 1], intersections[:, 2], "*")
             plt.pause(0.0001)
         return all_samples
-    
-    
+
     def smooth_particle_cloud(self, measurements, L, dt, alpha=0.5, filter_on=True):
         """
         Smooth a cloud of particle trajectories with Lipschitz continuity constraints.
-        
+
         Args:
             measurements: Array of shape (n_particles, n_steps, 3) containing noisy 3D positions.
             L: Lipschitz constant (maximum velocity magnitude).
             dt: Time step between consecutive measurements.
             alpha: Smoothing factor (0 < alpha < 1). Smaller values = more smoothing.
             filter_on: Enable filtering on particles when True.
-        
+
         Returns:
             smoothed: Array of shape (n_particles, n_steps, 3) containing smoothed positions.
         """
@@ -960,7 +972,7 @@ class FlysurfSampler:
 
             # Compute norms of steps for all particles
             step_norms = np.linalg.norm(step, axis=1, keepdims=True)  # Shape: (n_particles, 1)
-            step_norms += 1e-3*(step_norms < 1e-3) # to overcome divided-by-zero problem
+            step_norms += 1e-3 * (step_norms < 1e-3)  # to overcome divided-by-zero problem
 
             # Clamp steps exceeding max_step
             over_limit = step_norms > max_step
@@ -971,7 +983,7 @@ class FlysurfSampler:
         else:
             self.vel = (measurements - self.filtered_samples)
             self.filtered_samples = measurements
-        
+
         return self.filtered_samples
 
 
@@ -1027,10 +1039,10 @@ def drag_points_vectorized(A, control_indices, B, sigma):
 
 
 def oscillation(i):
-    return np.sin(i*np.pi/100)*0.05
+    return np.sin(i * np.pi / 100) * 0.05
 
 
-def Euler_distance_points(rows,cols,states):
+def Euler_distance_points(rows, cols, states):
     states_reshaped = states.reshape((rows, cols, 3))  # Shape (9, 9, 3)
 
     # Initialize list to store distances
@@ -1099,26 +1111,26 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 21 # number of samples on the outermost sides
-    points_coord = np.array([[mesh_size-1, mesh_size-1],
-                             [mesh_size-1, 0],
+    mesh_size = 21  # number of samples on the outermost sides
+    points_coord = np.array([[mesh_size - 1, mesh_size - 1],
+                             [mesh_size - 1, 0],
                              [0, 0],
-                             [0, mesh_size-1],
-                             [(mesh_size-1)//2, (mesh_size-1)//2],
-                             [mesh_size-1, (mesh_size-1)//2],
-                             [0, (mesh_size-1)//2],
-                             [(mesh_size-1)//2, mesh_size-1],
-                             [(mesh_size-1)//2, 0]])
-    
-    points = np.array([[ 0.9,   0.4,   0.45],
-                       [ 0.1,   0.4,   0.45],
-                       [ 0.1,  -0.4,   0.45],
-                       [ 0.9,  -0.4,   0.45],
-                       [ 0.5,   0.,    0.45],
-                       [ 0.5,   0.4,   0.45],
-                       [ 0.5,  -0.4,   0.45],
-                       [ 0.9,   0.0,   0.45],
-                       [ 0.1,   0.0,   0.45]])
+                             [0, mesh_size - 1],
+                             [(mesh_size - 1) // 2, (mesh_size - 1) // 2],
+                             [mesh_size - 1, (mesh_size - 1) // 2],
+                             [0, (mesh_size - 1) // 2],
+                             [(mesh_size - 1) // 2, mesh_size - 1],
+                             [(mesh_size - 1) // 2, 0]])
+
+    points = np.array([[0.9, 0.4, 0.45],
+                       [0.1, 0.4, 0.45],
+                       [0.1, -0.4, 0.45],
+                       [0.9, -0.4, 0.45],
+                       [0.5, 0., 0.45],
+                       [0.5, 0.4, 0.45],
+                       [0.5, -0.4, 0.45],
+                       [0.9, 0.0, 0.45],
+                       [0.1, 0.0, 0.45]])
 
     # points = np.array([[ 0.41,   0.39,    0.15],       # 0
     #                    [-0.38,   0.42,   -0.05],     # 1
@@ -1127,14 +1139,13 @@ if __name__ == "__main__":
     #                 #    [-0.19,   0.01,     0.2],
     #                 #    [ 0.21,  -0.02,     0.1],
     #                    [0.04,    0.07,    -0.1]])
-    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1.0/(mesh_size-1), num_sample_per_curve=mesh_size)
+    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1.0 / (mesh_size - 1), num_sample_per_curve=mesh_size)
     flysurf.update(points_coord, points)
     sampler = FlysurfSampler(flysurf, mesh_size, points, points_coord)
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=90, azim=-90)
-    
 
     for i in range(500):
         ax.clear()
@@ -1147,24 +1158,24 @@ if __name__ == "__main__":
         # time_start = time.time()
         # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
         # points += random_array
-        points[0, 2] += 0.17*oscillation(5.0*i)
-        points[1, 2] += 0.13*oscillation(7.0*i+1)
-        points[2, 2] -= 0.23*oscillation(8.0*i+1.74)
-        points[3, 2] += 0.19*oscillation(6.0*i+4.1)
-        points[4, 2] -= 0.21*oscillation(7.5*i+3)
-        points[5, 2] -= 0.19*oscillation(3.1*i+1.2)
-        points[6, 2] += 0.19*oscillation(5.1*i+2.0)
-        points[7, 2] -= 0.13*oscillation(0.9*i-0.5)
-        points[8, 2] += 0.13*oscillation(4.1*i-1.1)
-        points[0, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[1, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[2, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[3, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[4, :2] += 0.015*np.array([np.cos(0.12*i), np.sin(0.12*i)])
-        points[5, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[6, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[7, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
-        points[8, :2] += 0.01*np.array([np.cos(0.1*i), np.sin(0.1*i)])
+        points[0, 2] += 0.17 * oscillation(5.0 * i)
+        points[1, 2] += 0.13 * oscillation(7.0 * i + 1)
+        points[2, 2] -= 0.23 * oscillation(8.0 * i + 1.74)
+        points[3, 2] += 0.19 * oscillation(6.0 * i + 4.1)
+        points[4, 2] -= 0.21 * oscillation(7.5 * i + 3)
+        points[5, 2] -= 0.19 * oscillation(3.1 * i + 1.2)
+        points[6, 2] += 0.19 * oscillation(5.1 * i + 2.0)
+        points[7, 2] -= 0.13 * oscillation(0.9 * i - 0.5)
+        points[8, 2] += 0.13 * oscillation(4.1 * i - 1.1)
+        points[0, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+        points[1, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+        points[2, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+        points[3, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+        points[4, :2] += 0.012 * np.array([np.cos(0.11 * i), np.sin(0.11 * i)])
+        points[5, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+        points[6, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+        points[7, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+        points[8, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
         # points += np.random.normal(loc=0, scale=0.005, size=points.shape)
 
         # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
@@ -1173,14 +1184,14 @@ if __name__ == "__main__":
         # visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=False, num_samples=25)
 
         all_samples = sampler.sampling_v1(fig, ax, points, coordinates=points_coord)
-        vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:,1]))
+        vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:, 1]))
 
         filtered_points = sampler.smooth_particle_cloud(all_samples, max_speed, dt)
-        vel_hist.append(np.linalg.norm(sampler.vel[:,1]))
+        vel_hist.append(np.linalg.norm(sampler.vel[:, 1]))
 
         # Before filter
         # ax.plot(all_samples[:, 0], all_samples[:, 1], all_samples[:, 2], "*")
-        # 
+        #
         unfiltered_samples_rows = all_samples.reshape((mesh_size, mesh_size, 3))
 
         # for i in range(unfiltered_samples_rows.shape[0]):
@@ -1192,7 +1203,8 @@ if __name__ == "__main__":
         # plt.pause(0.0001)
         filtered_samples_rows = filtered_points.reshape((mesh_size, mesh_size, 3))
         for i in range(filtered_samples_rows.shape[0]):
-            ax.plot(filtered_samples_rows[i, :, 0], filtered_samples_rows[i, :, 1], filtered_samples_rows[i, :, 2], "*-")
+            ax.plot(filtered_samples_rows[i, :, 0], filtered_samples_rows[i, :, 1], filtered_samples_rows[i, :, 2],
+                    "*-")
         plt.pause(0.0001)
 
         # print(average_hausdorff_distance(all_samples, filtered_points))
