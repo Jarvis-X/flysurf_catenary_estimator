@@ -935,11 +935,12 @@ class FlysurfSampler:
             control_indices.append(i * resolution + j)
 
         num_actuators = len(control_indices)
-        sigma = np.zeros((num_actuators,)) + 0.1
+        sigma = np.zeros((num_actuators,)) + 0.3
+        alpha = np.zeros((num_actuators,)) + 0.2
         if num_actuators > 4:
-            sigma[4] += 0.2
-            if num_actuators > 5:
-                sigma[5:] += 0.1
+            sigma[4] -= 0.1
+            alpha[4] += 0.8
+
         all_samples = drag_points_vectorized(all_samples, control_indices, points,
                                              sigma=sigma)
 
@@ -987,7 +988,7 @@ class FlysurfSampler:
         return self.filtered_samples
 
 
-def drag_points_vectorized(A, control_indices, B, sigma):
+def drag_points_vectorized(A, control_indices, B, sigma, alpha=None):
     """
     Drag points in A based on control points and their target positions, with a per-control-point sigma.
 
@@ -1000,6 +1001,9 @@ def drag_points_vectorized(A, control_indices, B, sigma):
         The target positions for the control points.
     sigma : ndarray of shape (k,)
         Gaussian spread for each control point; smaller values make the influence more local.
+    alpha : ndarray of shape (k,), optional
+        Weight of effect for each control point. Larger values amplify the influence.
+        If None, defaults to all ones.
 
     Returns:
     A_new : ndarray of shape (n, 3)
@@ -1009,6 +1013,14 @@ def drag_points_vectorized(A, control_indices, B, sigma):
     sigma = np.asarray(sigma)
     if sigma.ndim != 1 or sigma.shape[0] != B.shape[0]:
         raise ValueError("sigma must be a 1D array with the same length as the number of control points in B")
+    
+    # Validate alpha
+    if alpha is None:
+        alpha = np.ones(B.shape[0])
+    else:
+        alpha = np.asarray(alpha)
+        if alpha.ndim != 1 or alpha.shape[0] != B.shape[0]:
+            raise ValueError("alpha must be a 1D array with the same length as B")
 
     # Extract control points from A and compute their displacements
     A_control = A[control_indices]  # shape (k, 3)
@@ -1023,7 +1035,7 @@ def drag_points_vectorized(A, control_indices, B, sigma):
 
     # Use broadcasting to compute per-control-point Gaussian weights.
     # (sigma**2) is of shape (k,), so we add a new axis to broadcast over n.
-    weights = np.exp(-dist_sq / (sigma ** 2)[None, :])
+    weights = alpha[None, :] * np.exp(-dist_sq / (sigma ** 2)[None, :])
 
     # Compute the weighted displacement for each point in A.
     # weights[..., None] has shape (n, k, 1), d[None, :, :] has shape (1, k, 3)
@@ -1116,7 +1128,7 @@ if __name__ == "__main__":
                              [mesh_size - 1, 0],
                              [0, 0],
                              [0, mesh_size - 1],
-                             [(mesh_size - 1) // 2, (mesh_size - 1) // 2],
+                             [(mesh_size - 1) // 2, (mesh_size - 1) // 2],#])
                              [mesh_size - 1, (mesh_size - 1) // 2],
                              [0, (mesh_size - 1) // 2],
                              [(mesh_size - 1) // 2, mesh_size - 1],
@@ -1126,7 +1138,7 @@ if __name__ == "__main__":
                        [0.1, 0.4, 0.45],
                        [0.1, -0.4, 0.45],
                        [0.9, -0.4, 0.45],
-                       [0.5, 0., 0.45],
+                       [0.5, 0., 0.45],#])
                        [0.5, 0.4, 0.45],
                        [0.5, -0.4, 0.45],
                        [0.9, 0.0, 0.45],
