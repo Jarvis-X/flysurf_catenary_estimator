@@ -89,14 +89,15 @@ class CatenarySurfaceOptimizer:
 
     def objective(self, params):
         """Sum of squared residuals objective function"""
-        model = self._catenary_surface(params)
-        return np.sum((self.z - model) ** 2)
+        scaling = 0.1
+        model = scaling*self._catenary_surface(params)
+        return np.sum((scaling*self.z - model) ** 2)
 
     def fit(self, initial_guess):
         """Optimization using minimize without gradient"""
         # Enforce a > 0 using bounds
         bounds = [
-            (1e-6, None),  # a must be positive
+            (1e-3, None),  # a must be positive
             (None, None),  # x0
             (None, None),  # y0
             (None, None)  # z0
@@ -189,6 +190,9 @@ class CatenaryFlySurf:
                     index += 1
 
             initial_guess = self.catenary_surface_params[surface]
+            if np.isnan(initial_guess[0]):
+                initial_guess[0] = 0.5
+            initial_guess = np.nan_to_num(initial_guess, nan=0.0)
             # x = surface_points[:, 0]
             # y = surface_points[:, 1]
             # z = surface_points[:, 2]
@@ -530,9 +534,13 @@ class CatenaryFlySurf:
         )
         return result.root
 
-    def _objective_with_gradient(self, params, x1, z1, x2, z2, L):
+    def _objective_with_gradient(self, params, x1, z1, x2, z2, L,
+                                 alpha=0.1, beta=0.1, gamma=0.1):
         """
-        Objective function with gradients for optimization using exact arc length.
+        Objective function with gradients and scaling factors.
+        alpha: scaling factor for z1 error
+        beta: scaling factor for z2 error
+        gamma: scaling factor for length error
         """
         c, x0, z0 = params
 
@@ -543,31 +551,37 @@ class CatenaryFlySurf:
         # Exact curve length
         L_cat = self._compute_exact_arc_length(c, x0, x1, x2)
 
-        # Residuals
-        error_z1 = z1 - z1_pred
-        error_z2 = z2 - z2_pred
-        error_length = L - L_cat
+        # Residuals with scaling
+        error_z1 = (z1 - z1_pred) * np.sqrt(alpha)  # sqrt for proper scaling in least squares
+        error_z2 = (z2 - z2_pred) * np.sqrt(beta)
+        error_length = (L - L_cat) * np.sqrt(gamma)
 
-        # Objective function
-        objective_value = error_z1 ** 2 + error_z2 ** 2 + error_length ** 2
+        # Scaled objective function
+        objective_value = (alpha * (z1 - z1_pred) ** 2 +
+                           beta * (z2 - z2_pred) ** 2 +
+                           gamma * (L - L_cat) ** 2)
 
-        # Gradients
+        # Gradients (using intermediate variables)
         dz1_dc = np.cosh((x1 - x0) / c) - (x1 - x0) / c * np.sinh((x1 - x0) / c)
         dz2_dc = np.cosh((x2 - x0) / c) - (x2 - x0) / c * np.sinh((x2 - x0) / c)
 
         dz1_dx0 = -np.sinh((x1 - x0) / c)
         dz2_dx0 = -np.sinh((x2 - x0) / c)
 
-        dz1_dz0 = 1
-        dz2_dz0 = 1
-
-        # Gradients for the arc length
+        # Arc length gradients (assuming implementation exists)
         dL_dc, dL_dx0 = self._gradient_arc_length(c, x0, x1, x2)
 
-        # Total gradient components
-        grad_c = -2 * error_z1 * dz1_dc - 2 * error_z2 * dz2_dc - 2 * error_length * dL_dc
-        grad_x0 = -2 * error_z1 * dz1_dx0 - 2 * error_z2 * dz2_dx0 - 2 * error_length * dL_dx0
-        grad_z0 = -2 * error_z1 * dz1_dz0 - 2 * error_z2 * dz2_dz0
+        # Scaled gradient components
+        grad_c = (-2 * alpha * (z1 - z1_pred) * dz1_dc
+                  - 2 * beta * (z2 - z2_pred) * dz2_dc
+                  - 2 * gamma * (L - L_cat) * dL_dc)
+
+        grad_x0 = (-2 * alpha * (z1 - z1_pred) * dz1_dx0
+                   - 2 * beta * (z2 - z2_pred) * dz2_dx0
+                   - 2 * gamma * (L - L_cat) * dL_dx0)
+
+        grad_z0 = (-2 * alpha * (z1 - z1_pred) * 1.0  # dz1/dz0 = 1
+                   - 2 * beta * (z2 - z2_pred) * 1.0)  # dz2/dz0 = 1
 
         return objective_value, np.array([grad_c, grad_x0, grad_z0])
 
@@ -905,6 +919,7 @@ class FlysurfSampler:
                                 (0, (resolution - 1) * resolution)]  # left
 
         line_seg_points = []
+
         for i, connection in enumerate(four_outermost_edges):
             # Retrieve curve parameters and sampled points
             curve_length, catenary_param, other_data = flysurf.catenary_curve_params[connection]
@@ -1273,7 +1288,6 @@ if __name__ == "__main__":
             ax.set_xlim(-0.0, 1.0)
             ax.set_ylim(-0.5, 0.5)
             ax.set_zlim(-0.5, 0.5)
-            # time_start = time.time()
             # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
             # points += random_array
             points[0, 2] += 0.17 * oscillation(5.0 * i)
@@ -1297,14 +1311,18 @@ if __name__ == "__main__":
             # points += np.random.normal(loc=0, scale=0.005, size=points.shape)
 
             # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
+            # time_start = time.time()
             sampler.flysurf.update(points_coord, points)
-            # print("elapsed time:", time.time() - time_start)
+            # print("elapsed time till update:", time.time() - time_start)
+
             # visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=False, num_samples=25)
 
             all_samples = sampler.sampling_v1(fig, ax, points, coordinates=points_coord)
+            # print("elapsed time till sampling:", time.time() - time_start)
             vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:, 1]))
 
             filtered_points = sampler.smooth_particle_cloud(all_samples, max_speed, dt)
+            # print("total elapsed time:", time.time() - time_start)
             vel_hist.append(np.linalg.norm(sampler.vel[:, 1]))
 
             # Before filter
