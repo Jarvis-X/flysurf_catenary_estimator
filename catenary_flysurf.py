@@ -74,8 +74,48 @@ def barycentric_test_with_distance(point, p1, p2, p3):
         return min(d1, d2, d3)  # Minimum distance to the triangle
 
 
+class CatenarySurfaceOptimizer:
+    def __init__(self, surface_points):
+        self.surface_points = surface_points
+        self.x = surface_points[:, 0]
+        self.y = surface_points[:, 1]
+        self.z = surface_points[:, 2]
+
+    def _catenary_surface(self, params):
+        """Catenary surface model: z0 + a*cosh(r/a) where r=√[(x-x0)² + (y-y0)²]"""
+        a, x0, y0, z0 = params
+        r = np.sqrt((self.x - x0) ** 2 + (self.y - y0) ** 2)
+        return z0 + a * np.cosh(r / a)
+
+    def objective(self, params):
+        """Sum of squared residuals objective function"""
+        model = self._catenary_surface(params)
+        return np.sum((self.z - model) ** 2)
+
+    def fit(self, initial_guess):
+        """Optimization using minimize without gradient"""
+        # Enforce a > 0 using bounds
+        bounds = [
+            (1e-6, None),  # a must be positive
+            (None, None),  # x0
+            (None, None),  # y0
+            (None, None)  # z0
+        ]
+
+        result = minimize(
+            fun=self.objective,
+            x0=initial_guess,
+            method='L-BFGS-B',  # Works well even with numerical gradients
+            bounds=bounds,
+            options={'disp': False, 'maxiter': 1000}
+        )
+        return result
+
+
 class CatenaryFlySurf:
     def __init__(self, lc, lr, l_cell, num_sample_per_curve=10):
+        self.log_catenary_time = []
+        self.log_surface_time = []
         self.lc = lc
         self.lr = lr
         self.num_points = lc * lr
@@ -125,13 +165,17 @@ class CatenaryFlySurf:
         network_coords = points_coord[order_of_points]
         # print(network_coords)
 
-        edges = self._generate_planar_graph(network_coords, points)
+        # edges = self._generate_planar_graph(network_coords, points)
+        edges = self._generate_planar_graph_delaunay(network_coords, points)
         self.active_ridge = edges
+        time_start_build_catenary_network = time.time()
         self._build_catenary_network(parallelize=False)
+        self.log_catenary_time.append(time.time() - time_start_build_catenary_network)
 
         num_samples = self.num_samples
 
         # for estimating the surface
+        time_start_estimating_surface = time.time()
         for i, surface in enumerate(self.active_surface):
             num_vertices = len(surface)
             num_edges = num_vertices
@@ -145,11 +189,15 @@ class CatenaryFlySurf:
                     index += 1
 
             initial_guess = self.catenary_surface_params[surface]
-            x = surface_points[:, 0]
-            y = surface_points[:, 1]
-            z = surface_points[:, 2]
-            result = least_squares(self._residuals, initial_guess, args=(x, y, z))
+            # x = surface_points[:, 0]
+            # y = surface_points[:, 1]
+            # z = surface_points[:, 2]
+            optimizer = CatenarySurfaceOptimizer(surface_points)
+            result = optimizer.fit(initial_guess=initial_guess)
+            # result = least_squares(self._residuals, initial_guess, args=(x, y, z))
             self.catenary_surface_params[surface] = result.x
+
+        self.log_surface_time.append(time.time() - time_start_estimating_surface)
 
     def _generate_mesh_in_triangle(self, p1, p2, p3, resolution=10):
         """
@@ -293,6 +341,63 @@ class CatenaryFlySurf:
 
         self.active_surface = active_surface
         return edges
+
+
+    def _generate_planar_graph_delaunay(self, network_coords, points):
+        """
+        Generate a planar graph from 3D point positions by projecting to 2D and connecting neighbors.
+        Taking as a priori that the first four points are always connected
+        Parameters:
+            network_coords (ndarray):
+            points (ndarray): each row is a 3D point (x, y, z).
+
+        Returns:
+            edges: A list of edges, where each edge is represented by the indices of the points it connects.
+        """
+        # Generates the planar graph using Delaunay triangulation
+        tri = Delaunay(network_coords)
+        simplices = tri.simplices  # corners of the triangular subregions
+
+        # Extract and sort edges from all simplices
+        edges_index = np.vstack((
+            simplices[:, [0, 1]],
+            simplices[:, [1, 2]],
+            simplices[:, [2, 0]]))
+        edges_index.sort(axis=1)
+        np.unique(edges_index, axis=0)
+
+        # Collect edges
+        edges = dict()
+
+        points_array = np.array(points)
+
+        # for i, j in ij_pairs:
+        for edge_index in edges_index.tolist():
+            coord1 = int(self._coord2index(network_coords[edge_index[0]]))
+            coord2 = int(self._coord2index(network_coords[edge_index[1]]))
+            key = [coord1, coord2]
+            val = [points_array[edge_index[0], :], points_array[edge_index[1], :]]
+            key, val = zip(*sorted(zip(key, val)))
+            key = tuple(key)
+            edges[key] = val
+
+        # Generate triangle surfaces
+        active_surface = []
+        for surface in simplices.tolist():
+            i, j, k = surface
+            coord1 = int(self._coord2index(network_coords[i]))
+            coord2 = int(self._coord2index(network_coords[j]))
+            coord3 = int(self._coord2index(network_coords[k]))
+            key = tuple(sorted((coord1, coord2, coord3)))
+
+            if key not in self.catenary_surface_params:
+                # print(key)
+                self.catenary_surface_params[key] = [0.5, 0, 0, 0]
+            active_surface.append(key)
+
+        self.active_surface = active_surface
+        return edges
+
 
     def is_inside(self, triA, triB):
         """
@@ -936,10 +1041,10 @@ class FlysurfSampler:
 
         num_actuators = len(control_indices)
         sigma = np.zeros((num_actuators,)) + 0.3
-        alpha = np.zeros((num_actuators,)) + 0.2
+        alpha = np.zeros((num_actuators,)) + 0.3
         if num_actuators > 4:
             sigma[4] -= 0.1
-            alpha[4] += 0.8
+            alpha[4] += 0.7
 
         all_samples = drag_points_vectorized(all_samples, control_indices, points,
                                              sigma=sigma)
@@ -1123,7 +1228,7 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 21  # number of samples on the outermost sides
+    mesh_size = 15  # number of samples on the outermost sides
     points_coord = np.array([[mesh_size - 1, mesh_size - 1],
                              [mesh_size - 1, 0],
                              [0, 0],
@@ -1159,72 +1264,72 @@ if __name__ == "__main__":
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=90, azim=-90)
 
-    for i in range(500):
-        ax.clear()
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-        ax.set_zlabel("Z")
-        ax.set_xlim(-0.0, 1.0)
-        ax.set_ylim(-0.5, 0.5)
-        ax.set_zlim(-0.5, 0.5)
-        # time_start = time.time()
-        # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
-        # points += random_array
-        points[0, 2] += 0.17 * oscillation(5.0 * i)
-        points[1, 2] += 0.13 * oscillation(7.0 * i + 1)
-        points[2, 2] -= 0.23 * oscillation(8.0 * i + 1.74)
-        points[3, 2] += 0.19 * oscillation(6.0 * i + 4.1)
-        points[4, 2] -= 0.21 * oscillation(7.5 * i + 3)
-        points[5, 2] -= 0.19 * oscillation(3.1 * i + 1.2)
-        points[6, 2] += 0.19 * oscillation(5.1 * i + 2.0)
-        points[7, 2] -= 0.13 * oscillation(0.9 * i - 0.5)
-        points[8, 2] += 0.13 * oscillation(4.1 * i - 1.1)
-        points[0, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-        points[1, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-        points[2, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-        points[3, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-        points[4, :2] += 0.012 * np.array([np.cos(0.11 * i), np.sin(0.11 * i)])
-        points[5, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-        points[6, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-        points[7, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-        points[8, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-        # points += np.random.normal(loc=0, scale=0.005, size=points.shape)
+    try:
+        for i in range(500):
+            ax.clear()
+            ax.set_xlabel("X")
+            ax.set_ylabel("Y")
+            ax.set_zlabel("Z")
+            ax.set_xlim(-0.0, 1.0)
+            ax.set_ylim(-0.5, 0.5)
+            ax.set_zlim(-0.5, 0.5)
+            # time_start = time.time()
+            # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
+            # points += random_array
+            points[0, 2] += 0.17 * oscillation(5.0 * i)
+            points[1, 2] += 0.13 * oscillation(7.0 * i + 1)
+            points[2, 2] -= 0.14 * oscillation(8.0 * i + 1.74)
+            points[3, 2] += 0.17 * oscillation(6.0 * i + 4.1)
+            points[4, 2] -= 0.19 * oscillation(7.5 * i + 3)
+            points[5, 2] -= 0.18 * oscillation(3.1 * i + 1.2)
+            points[6, 2] += 0.16 * oscillation(5.1 * i + 2.0)
+            points[7, 2] -= 0.13 * oscillation(0.9 * i - 0.5)
+            points[8, 2] += 0.13 * oscillation(4.1 * i - 1.1)
+            points[0, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+            points[1, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+            points[2, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+            points[3, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+            points[4, :2] += 0.011 * np.array([np.cos(0.11 * i), np.sin(0.11 * i)])
+            points[5, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+            points[6, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+            points[7, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+            points[8, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+            # points += np.random.normal(loc=0, scale=0.005, size=points.shape)
 
-        # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
-        sampler.flysurf.update(points_coord, points)
-        # print("elapsed time:", time.time() - time_start)
-        # visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=False, num_samples=25)
+            # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
+            sampler.flysurf.update(points_coord, points)
+            # print("elapsed time:", time.time() - time_start)
+            # visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=False, num_samples=25)
 
-        all_samples = sampler.sampling_v1(fig, ax, points, coordinates=points_coord)
-        vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:, 1]))
+            all_samples = sampler.sampling_v1(fig, ax, points, coordinates=points_coord)
+            vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:, 1]))
 
-        filtered_points = sampler.smooth_particle_cloud(all_samples, max_speed, dt)
-        vel_hist.append(np.linalg.norm(sampler.vel[:, 1]))
+            filtered_points = sampler.smooth_particle_cloud(all_samples, max_speed, dt)
+            vel_hist.append(np.linalg.norm(sampler.vel[:, 1]))
 
-        # Before filter
-        # ax.plot(all_samples[:, 0], all_samples[:, 1], all_samples[:, 2], "*")
-        #
-        unfiltered_samples_rows = all_samples.reshape((mesh_size, mesh_size, 3))
+            # Before filter
+            # ax.plot(all_samples[:, 0], all_samples[:, 1], all_samples[:, 2], "*")
+            #
+            unfiltered_samples_rows = all_samples.reshape((mesh_size, mesh_size, 3))
 
-        # for i in range(unfiltered_samples_rows.shape[0]):
-        #     ax.plot(unfiltered_samples_rows[i, :, 0], unfiltered_samples_rows[i, :, 1], unfiltered_samples_rows[i, :, 2], "*-")
-        # plt.pause(0.0001)
+            # for i in range(unfiltered_samples_rows.shape[0]):
+            #     ax.plot(unfiltered_samples_rows[i, :, 0], unfiltered_samples_rows[i, :, 1], unfiltered_samples_rows[i, :, 2], "*-")
+            # plt.pause(0.0001)
 
-        # After filter
-        # ax.plot(filtered_points[:, 0], filtered_points[:, 1], filtered_points[:, 2], "*")
-        # plt.pause(0.0001)
-        filtered_samples_rows = filtered_points.reshape((mesh_size, mesh_size, 3))
-        for i in range(filtered_samples_rows.shape[0]):
-            ax.plot(filtered_samples_rows[i, :, 0], filtered_samples_rows[i, :, 1], filtered_samples_rows[i, :, 2],
-                    "*-")
+            # After filter
+            # ax.plot(filtered_points[:, 0], filtered_points[:, 1], filtered_points[:, 2], "*")
+            # plt.pause(0.0001)
+            filtered_samples_rows = filtered_points.reshape((mesh_size, mesh_size, 3))
+            for i in range(filtered_samples_rows.shape[0]):
+                ax.plot(filtered_samples_rows[i, :, 0], filtered_samples_rows[i, :, 1], filtered_samples_rows[i, :, 2], "-*")
+            plt.pause(0.0001)
+
+            # print(average_hausdorff_distance(all_samples, filtered_points))
+            # input()
+    finally:
+        fig1 = plt.figure()
+        ax1 = fig1.add_subplot(111)
+        ax1.plot(flysurf.log_catenary_time, "r")
+        ax1.plot(flysurf.log_surface_time, "b")
         plt.pause(0.0001)
-
-        # print(average_hausdorff_distance(all_samples, filtered_points))
-        # input()
-
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    ax.plot(vel_raw_hist, "r")
-    ax.plot(vel_hist, "b")
-    plt.pause(0.0001)
-    input()
+        input()
