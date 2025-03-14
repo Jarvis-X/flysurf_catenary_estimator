@@ -27,6 +27,94 @@ christmas_colors = [
 christmas_cmap = mcolors.LinearSegmentedColormap.from_list("christmas", christmas_colors, N=256)
 
 
+def batch_surf_sampling(intersections, surf_info):
+    # Convert input data to numpy arrays
+    points = np.array(intersections)  # Shape (N, 2)
+    surf_corners_list = [surf[0] for surf in surf_info]
+    surf_params_list = [surf[1] for surf in surf_info]
+    surf_params_all = np.array(surf_params_list)  # Shape (M, 4)
+    surfaces = np.array(surf_corners_list)[:, :, :2]  # Shape (M, 3, 2)
+
+    M = surfaces.shape[0]
+    N = points.shape[0]
+
+    # Extract triangle vertices for all surfaces
+    p1 = surfaces[:, 0, :]  # (M, 2)
+    p2 = surfaces[:, 1, :]
+    p3 = surfaces[:, 2, :]
+
+    # Compute vectors for barycentric coordinates
+    v0 = p3 - p1  # (M, 2)
+    v1 = p2 - p1  # (M, 2)
+    points_exp = points[:, np.newaxis, :]  # (N, 1, 2)
+    p1_exp = p1[np.newaxis, :, :]  # (1, M, 2)
+    v2 = points_exp - p1_exp  # (N, M, 2)
+
+    # Calculate dot products
+    dot00 = np.sum(v0 * v0, axis=1)  # (M,)
+    dot01 = np.sum(v0 * v1, axis=1)  # (M,)
+    dot02 = np.sum(v0[np.newaxis, :, :] * v2, axis=2)  # (N, M)
+    dot11 = np.sum(v1 * v1, axis=1)  # (M,)
+    dot12 = np.sum(v1[np.newaxis, :, :] * v2, axis=2)  # (N, M)
+
+    denom = dot00 * dot11 - dot01 ** 2  # (M,)
+    denom_nonzero = denom != 0  # (M,)
+
+    # Barycentric coordinates
+    valid_mask = denom_nonzero[np.newaxis, :]  # Shape (1, M) -> broadcasts to (N, M)
+
+    # Compute u and v using broadcasting with np.divide's where parameter
+    u = np.zeros((N, M))
+    v = np.zeros((N, M))
+    np.divide(
+        (dot11 * dot02) - (dot01 * dot12),
+        denom,
+        where=valid_mask,
+        out=u
+    )
+    np.divide(
+        (dot00 * dot12) - (dot01 * dot02),
+        denom,
+        where=valid_mask,
+        out=v
+    )
+
+    # Inside check now uses broadcasted valid_mask
+    is_inside = (u >= 0) & (v >= 0) & ((u + v) <= 1) & valid_mask
+
+    # Distance calculation to edges
+    def edge_distance(A, B):
+        AB = B - A
+        AP = points_exp - A[np.newaxis, :, :]
+        AB_dot = np.sum(AB * AB, axis=1)
+        safe_AB_dot = np.where(AB_dot == 0, 1e-10, AB_dot)
+        AP_dot_AB = np.sum(AP * AB[np.newaxis, :, :], axis=2)
+        t = AP_dot_AB / safe_AB_dot[np.newaxis, :]
+        t_clamped = np.clip(t, 0.0, 1.0)
+        closest = A[np.newaxis, :, :] + t_clamped[..., np.newaxis] * AB[np.newaxis, :, :]
+        return np.linalg.norm(points_exp - closest, axis=2)
+
+    d1 = edge_distance(p1, p2)
+    d2 = edge_distance(p2, p3)
+    d3 = edge_distance(p3, p1)
+    min_dist = np.minimum(np.minimum(d1, d2), d3)
+
+    # Combine distances with inside check
+    distances = np.where(is_inside, 0.0, min_dist)
+
+    # Find closest surface for each point
+    min_indices = np.argmin(distances, axis=1)
+    selected_params = surf_params_all[min_indices]
+
+    # Compute z-values using the closest parameters
+    z_vals = [
+        flysurf._catenary_surface(tuple(params), point[0], point[1])
+        for params, point in zip(selected_params, points)
+    ]
+
+    return z_vals
+
+
 def barycentric_test_with_distance(point, p1, p2, p3):
     # Convert all points to numpy arrays
     p1 = np.array(p1)
@@ -913,6 +1001,7 @@ class FlysurfSampler:
         if plot:
             ax.plot(points[0:4, 0], points[0:4, 1], points[0:4, 2], "*")
 
+        time_start_sampling_v1 = time.time_ns()
         four_outermost_edges = [(0, resolution - 1),  # bottom
                                 (resolution - 1, resolution ** 2 - 1),  # right
                                 ((resolution - 1) * resolution, resolution ** 2 - 1),  # top
@@ -993,6 +1082,7 @@ class FlysurfSampler:
                     full_curve_global[:, 2],
                     "*"
                 )
+        time_start_sampling_v1 = time.time_ns()
 
         line_pairs = [[line_seg_points[1], line_seg_points[3]], [line_seg_points[0], line_seg_points[2]]]
         S = [np.zeros((resolution - 2, 2, 2)), np.zeros((resolution - 2, 2, 2))]
@@ -1005,8 +1095,12 @@ class FlysurfSampler:
                 S[i][j, 0, :] = points1[j, :]
                 S[i][j, 1, :] = points2[j, :]
 
+        print("Check point 1 (ms):", (time.time_ns() - time_start_sampling_v1) * 1e-6)
+        time_start_sampling_v1 = time.time_ns()
         # print(S[0], S[1])
         intersections = find_all_intersections_batch(S[0], S[1])
+        print("Check point 2 (ms):", (time.time_ns() - time_start_sampling_v1) * 1e-6)
+        time_start_sampling_v1 = time.time_ns()
 
         surf_info = []
         for i, surface in enumerate(flysurf.active_surface):
@@ -1027,24 +1121,18 @@ class FlysurfSampler:
 
             surf_info.append((surf_corners, [c, x, y, z]))
 
-        z_vals = []
-        for point in intersections:
-            distances = []
-            for surf_corners, surf_params in surf_info:
-                c, x, y, z = surf_params
-                barycentric_distance = barycentric_test_with_distance(point, surf_corners[0][:2], surf_corners[1][:2],
-                                                                      surf_corners[2][:2])
-                distances.append((float(barycentric_distance), (c, x, y, z)))
+        print("Check point 3 (ms):", (time.time_ns() - time_start_sampling_v1) * 1e-6)
+        time_start_sampling_v1 = time.time_ns()
 
-            # print(point, distances)
-            sorted_distances = sorted(distances, key=lambda x: x[0])
-            z_vals.append(flysurf._catenary_surface(sorted_distances[0][1], point[0], point[1]))
+        z_vals = batch_surf_sampling(intersections, surf_info)
+
+        print("Check point 4 (ms):", (time.time_ns() - time_start_sampling_v1)*1e-6)
 
         # THIRD: inner surfaces
         intersections = np.column_stack((intersections, z_vals))
 
         all_samples[[i * resolution + j for i in range(1, resolution - 1) for j in range(1, resolution - 1)],
-        :] = intersections
+                    :] = intersections
 
         # Force the samples to cover the inner actuators
         # inner_points = points[4:, :]
@@ -1280,7 +1368,7 @@ if __name__ == "__main__":
     ax.view_init(elev=90, azim=-90)
 
     try:
-        for i in range(500):
+        for i in range(2000):
             ax.clear()
             ax.set_xlabel("X")
             ax.set_ylabel("Y")
@@ -1290,25 +1378,25 @@ if __name__ == "__main__":
             ax.set_zlim(-0.5, 0.5)
             # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
             # points += random_array
-            points[0, 2] += 0.17 * oscillation(5.0 * i)
+            points[0, 2] += 0.11 * oscillation(5.0 * i)
             points[1, 2] += 0.13 * oscillation(7.0 * i + 1)
             points[2, 2] -= 0.14 * oscillation(8.0 * i + 1.74)
-            points[3, 2] += 0.17 * oscillation(6.0 * i + 4.1)
-            points[4, 2] -= 0.19 * oscillation(7.5 * i + 3)
-            points[5, 2] -= 0.18 * oscillation(3.1 * i + 1.2)
-            points[6, 2] += 0.16 * oscillation(5.1 * i + 2.0)
+            points[3, 2] += 0.13 * oscillation(6.0 * i + 4.1)
+            points[4, 2] -= 0.12 * oscillation(2.5 * i + 3)
+            points[5, 2] -= 0.10 * oscillation(3.1 * i + 1.2)
+            points[6, 2] += 0.11 * oscillation(5.1 * i + 2.0)
             points[7, 2] -= 0.13 * oscillation(0.9 * i - 0.5)
             points[8, 2] += 0.13 * oscillation(4.1 * i - 1.1)
             points[0, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
             points[1, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
             points[2, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
             points[3, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-            points[4, :2] += 0.011 * np.array([np.cos(0.11 * i), np.sin(0.11 * i)])
+            points[4, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
             points[5, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
             points[6, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
             points[7, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
             points[8, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-            # points += np.random.normal(loc=0, scale=0.005, size=points.shape)
+            # points += np.random.normal(loc=0, scale=0.002, size=points.shape)
 
             # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
             # time_start = time.time()
@@ -1345,9 +1433,13 @@ if __name__ == "__main__":
             # print(average_hausdorff_distance(all_samples, filtered_points))
             # input()
     finally:
+        print("mean and std time in finding the catenary:", np.mean(flysurf.log_catenary_time),
+              np.std(flysurf.log_catenary_time))
+        print("mean and std time in finding the surfaces:", np.mean(flysurf.log_surface_time),
+              np.std(flysurf.log_surface_time))
         fig1 = plt.figure()
         ax1 = fig1.add_subplot(111)
-        ax1.plot(flysurf.log_catenary_time, "r")
-        ax1.plot(flysurf.log_surface_time, "b")
+        ax1.plot(flysurf.log_catenary_time, "r.")
+        ax1.plot(flysurf.log_surface_time, "b.")
         plt.pause(0.0001)
         input()
