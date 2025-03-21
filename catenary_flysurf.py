@@ -27,7 +27,7 @@ christmas_colors = [
 christmas_cmap = mcolors.LinearSegmentedColormap.from_list("christmas", christmas_colors, N=256)
 
 
-def batch_surf_sampling(intersections, surf_info):
+def batch_surf_sampling(intersections, surf_info, flysurf):
     # Convert input data to numpy arrays
     points = np.array(intersections)  # Shape (N, 2)
     surf_corners_list = [surf[0] for surf in surf_info]
@@ -1124,7 +1124,7 @@ class FlysurfSampler:
         print("Check point 3 (ms):", (time.time_ns() - time_start_sampling_v1) * 1e-6)
         time_start_sampling_v1 = time.time_ns()
 
-        z_vals = batch_surf_sampling(intersections, surf_info)
+        z_vals = batch_surf_sampling(intersections, surf_info, flysurf)
 
         print("Check point 4 (ms):", (time.time_ns() - time_start_sampling_v1)*1e-6)
 
