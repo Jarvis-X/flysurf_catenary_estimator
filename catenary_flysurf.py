@@ -180,7 +180,12 @@ class CatenarySurfaceOptimizer:
     def objective(self, params):
         """Sum of squared residuals objective function"""
         scaling = 0.1*np.eye(self.n*self.e)
-        scaling[::self.n, ::self.n] *= self.n*2
+        first_indices = np.arange(0, self.n*self.e, self.n)
+        last_indices = np.arange(self.n-1, self.n*self.e, self.n)
+
+        scaling[first_indices, first_indices] *= self.n*10.0
+        scaling[last_indices, last_indices] *= self.n*10.0
+        
         model = self._catenary_surface(params)
         return np.sum(scaling*(self.z - model) ** 2)
 
