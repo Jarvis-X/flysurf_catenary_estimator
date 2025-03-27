@@ -163,11 +163,13 @@ def barycentric_test_with_distance(point, p1, p2, p3):
 
 
 class CatenarySurfaceOptimizer:
-    def __init__(self, surface_points):
+    def __init__(self, surface_points, num_samples, num_edges):
         self.surface_points = surface_points
         self.x = surface_points[:, 0]
         self.y = surface_points[:, 1]
         self.z = surface_points[:, 2]
+        self.n = num_samples
+        self.e = num_edges
 
     def _catenary_surface(self, params):
         """Catenary surface model: z0 + a*cosh(r/a) where r=√[(x-x0)² + (y-y0)²]"""
@@ -177,9 +179,10 @@ class CatenarySurfaceOptimizer:
 
     def objective(self, params):
         """Sum of squared residuals objective function"""
-        scaling = 0.1
-        model = scaling*self._catenary_surface(params)
-        return np.sum((scaling*self.z - model) ** 2)
+        scaling = 0.1*np.eye(self.n*self.e)
+        scaling[::self.n, ::self.n] *= self.n*2
+        model = self._catenary_surface(params)
+        return np.sum(scaling*(self.z - model) ** 2)
 
     def fit(self, initial_guess):
         """Optimization using minimize without gradient"""
@@ -284,7 +287,7 @@ class CatenaryFlySurf:
             # x = surface_points[:, 0]
             # y = surface_points[:, 1]
             # z = surface_points[:, 2]
-            optimizer = CatenarySurfaceOptimizer(surface_points)
+            optimizer = CatenarySurfaceOptimizer(surface_points, num_samples, num_edges)
             result = optimizer.fit(initial_guess=initial_guess)
             # result = least_squares(self._residuals, initial_guess, args=(x, y, z))
             self.catenary_surface_params[surface] = result.x
@@ -575,11 +578,12 @@ class CatenaryFlySurf:
             x2, z2 = p2_local[0], p2_local[2]
             length = curve_lengths[i]
 
+            c_init, x0_init, y0_init = guesses[i]
             # Perform optimization
             result = minimize(
                 self._objective_with_gradient,
                 guesses[i],
-                args=(x1, z1, x2, z2, length),
+                args=(x1, z1, x2, z2, length, c_init, x0_init, y0_init),
                 bounds=[(1e-2, 10), (None, None), (None, None)],  # Ensure c > 0
                 method='L-BFGS-B',
                 jac=True,
@@ -622,13 +626,14 @@ class CatenaryFlySurf:
         )
         return result.root
 
-    def _objective_with_gradient(self, params, x1, z1, x2, z2, L,
-                                 alpha=0.1, beta=0.1, gamma=0.1):
+    def _objective_with_gradient(self, params, x1, z1, x2, z2, L, c_init, x0_init, z0_init,
+                                 alpha=0.1, beta=0.1, gamma=0.1, zeta=0.1):
         """
         Objective function with gradients and scaling factors.
         alpha: scaling factor for z1 error
         beta: scaling factor for z2 error
         gamma: scaling factor for length error
+        zeta: scaling factor for change in parameters
         """
         c, x0, z0 = params
 
@@ -640,14 +645,13 @@ class CatenaryFlySurf:
         L_cat = self._compute_exact_arc_length(c, x0, x1, x2)
 
         # Residuals with scaling
-        error_z1 = (z1 - z1_pred) * np.sqrt(alpha)  # sqrt for proper scaling in least squares
-        error_z2 = (z2 - z2_pred) * np.sqrt(beta)
-        error_length = (L - L_cat) * np.sqrt(gamma)
+        change = (c - c_init) ** 2 + (x0 - x0_init) ** 2 + (z0 - z0_init) ** 2
 
         # Scaled objective function
         objective_value = (alpha * (z1 - z1_pred) ** 2 +
                            beta * (z2 - z2_pred) ** 2 +
-                           gamma * (L - L_cat) ** 2)
+                           gamma * (L - L_cat) ** 2 + 
+                           zeta * change)
 
         # Gradients (using intermediate variables)
         dz1_dc = np.cosh((x1 - x0) / c) - (x1 - x0) / c * np.sinh((x1 - x0) / c)
@@ -656,20 +660,24 @@ class CatenaryFlySurf:
         dz1_dx0 = -np.sinh((x1 - x0) / c)
         dz2_dx0 = -np.sinh((x2 - x0) / c)
 
+
         # Arc length gradients (assuming implementation exists)
         dL_dc, dL_dx0 = self._gradient_arc_length(c, x0, x1, x2)
 
         # Scaled gradient components
         grad_c = (-2 * alpha * (z1 - z1_pred) * dz1_dc
                   - 2 * beta * (z2 - z2_pred) * dz2_dc
-                  - 2 * gamma * (L - L_cat) * dL_dc)
+                  - 2 * gamma * (L - L_cat) * dL_dc 
+                  + 2 * zeta * (c - c_init))
 
         grad_x0 = (-2 * alpha * (z1 - z1_pred) * dz1_dx0
                    - 2 * beta * (z2 - z2_pred) * dz2_dx0
-                   - 2 * gamma * (L - L_cat) * dL_dx0)
+                   - 2 * gamma * (L - L_cat) * dL_dx0
+                   + 2 * zeta * (x0 - x0_init))
 
-        grad_z0 = (-2 * alpha * (z1 - z1_pred) * 1.0  # dz1/dz0 = 1
-                   - 2 * beta * (z2 - z2_pred) * 1.0)  # dz2/dz0 = 1
+        grad_z0 = (-2 * alpha * (z1 - z1_pred)
+                   - 2 * beta * (z2 - z2_pred)
+                   + 2 * zeta * (z0 - z0_init))  
 
         return objective_value, np.array([grad_c, grad_x0, grad_z0])
 
@@ -1082,7 +1090,7 @@ class FlysurfSampler:
                     full_curve_global[:, 2],
                     "*"
                 )
-        time_start_sampling_v1 = time.time_ns()
+        # time_start_sampling_v1 = time.time_ns()
 
         line_pairs = [[line_seg_points[1], line_seg_points[3]], [line_seg_points[0], line_seg_points[2]]]
         S = [np.zeros((resolution - 2, 2, 2)), np.zeros((resolution - 2, 2, 2))]
@@ -1095,12 +1103,12 @@ class FlysurfSampler:
                 S[i][j, 0, :] = points1[j, :]
                 S[i][j, 1, :] = points2[j, :]
 
-        print("Check point 1 (ms):", (time.time_ns() - time_start_sampling_v1) * 1e-6)
-        time_start_sampling_v1 = time.time_ns()
+        # print("Check point 1 (ms):", (time.time_ns() - time_start_sampling_v1) * 1e-6)
+        # time_start_sampling_v1 = time.time_ns()
         # print(S[0], S[1])
         intersections = find_all_intersections_batch(S[0], S[1])
-        print("Check point 2 (ms):", (time.time_ns() - time_start_sampling_v1) * 1e-6)
-        time_start_sampling_v1 = time.time_ns()
+        # print("Check point 2 (ms):", (time.time_ns() - time_start_sampling_v1) * 1e-6)
+        # time_start_sampling_v1 = time.time_ns()
 
         surf_info = []
         for i, surface in enumerate(flysurf.active_surface):
@@ -1121,12 +1129,12 @@ class FlysurfSampler:
 
             surf_info.append((surf_corners, [c, x, y, z]))
 
-        print("Check point 3 (ms):", (time.time_ns() - time_start_sampling_v1) * 1e-6)
-        time_start_sampling_v1 = time.time_ns()
+        # print("Check point 3 (ms):", (time.time_ns() - time_start_sampling_v1) * 1e-6)
+        # time_start_sampling_v1 = time.time_ns()
 
         z_vals = batch_surf_sampling(intersections, surf_info, flysurf)
 
-        print("Check point 4 (ms):", (time.time_ns() - time_start_sampling_v1)*1e-6)
+        # print("Check point 4 (ms):", (time.time_ns() - time_start_sampling_v1)*1e-6)
 
         # THIRD: inner surfaces
         intersections = np.column_stack((intersections, z_vals))
@@ -1144,13 +1152,13 @@ class FlysurfSampler:
 
         num_actuators = len(control_indices)
         sigma = np.zeros((num_actuators,)) + 0.3
-        alpha = np.zeros((num_actuators,)) + 0.3
+        alpha = np.zeros((num_actuators,)) + 0.1
         if num_actuators > 4:
             sigma[4] -= 0.1
-            alpha[4] += 0.7
+            alpha[4] += 0.5
 
         all_samples = drag_points_vectorized(all_samples, control_indices, points,
-                                             sigma=sigma)
+                                             sigma=sigma, alpha=alpha)
 
         if plot:
             ax.plot(intersections[:, 0], intersections[:, 1], intersections[:, 2], "*")
