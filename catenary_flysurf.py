@@ -185,7 +185,7 @@ class CatenarySurfaceOptimizer:
 
         scaling[first_indices, first_indices] *= self.n*10.0
         scaling[last_indices, last_indices] *= self.n*10.0
-        
+
         model = self._catenary_surface(params)
         return np.sum(scaling*(self.z - model) ** 2)
 
@@ -1058,8 +1058,7 @@ class FlysurfSampler:
                             if index1 == 0:
                                 num_samples = index2 - index1 - 1
                                 if not num_samples == 0:
-                                    if len(range(resolution // num_samples + 1, resolution,
-                                                 resolution // num_samples)) < num_samples:
+                                    if len(range(resolution // num_samples + 1, resolution, resolution // num_samples)) < num_samples:
                                         full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[
                                                                                             resolution // num_samples - 1:resolution:resolution // num_samples,
                                                                                             :]
@@ -1069,8 +1068,15 @@ class FlysurfSampler:
                                                                                             :]
                             else:
                                 num_samples = index2 - index1
-                                full_curve_global[index1 - 1:index2, :] = samples_per_connection[
-                                                                          1:resolution:resolution // num_samples, :]
+                                step = resolution / num_samples
+                                indices = np.linspace(step / 2, resolution - step / 2, num=num_samples, dtype=int)
+                                full_curve_global[index1 - 1:index2 - 1, :] = samples_per_connection[indices, :]
+                                # num_samples = index2 - index1
+                                # print(full_curve_global)
+                                # print(index1 - 1, index2, resolution, num_samples, resolution // num_samples)
+
+                                # full_curve_global[index1 - 1:index2-1, :] = samples_per_connection[
+                                #                                           1:resolution:resolution // num_samples, :]
                             index1 = index2 - 1
                             break
                         else:
@@ -1344,26 +1350,60 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 15  # number of samples on the outermost sides
-    points_coord = np.array([[mesh_size - 1, mesh_size - 1],
-                             [mesh_size - 1, 0],
-                             [0, 0],
-                             [0, mesh_size - 1],
-                             [(mesh_size - 1) // 2, (mesh_size - 1) // 2],#])
-                             [mesh_size - 1, (mesh_size - 1) // 2],
-                             [0, (mesh_size - 1) // 2],
-                             [(mesh_size - 1) // 2, mesh_size - 1],
-                             [(mesh_size - 1) // 2, 0]])
+    mesh_size = 41  # number of samples on the outermost sides
+    points_coord = np.array([[            mesh_size - 1 ,            mesh_size - 1  ],
+                             [            mesh_size - 1 ,                        0  ],
+                             [                        0 ,                        0  ],
+                             [                        0 ,            mesh_size - 1  ], # corners
+                             [     (mesh_size - 1) // 2 ,     (mesh_size - 1) // 2  ], # center
+                             [            mesh_size - 1 ,     (mesh_size - 1) // 2  ], 
+                             [                        0 ,     (mesh_size - 1) // 2  ],
+                             [     (mesh_size - 1) // 2 ,            mesh_size - 1  ],
+                             [     (mesh_size - 1) // 2 ,                        0  ], # midpoints
+                             [            mesh_size - 1 ,     (mesh_size - 1) // 4  ], 
+                             [            mesh_size - 1 ,   (mesh_size - 1)*3 // 4  ], # top mid-midpoints
+                             [   (mesh_size - 1)*3 // 4 ,                        0  ],
+                             [   (mesh_size - 1)*3 // 4 ,     (mesh_size - 1) // 4  ],
+                             [   (mesh_size - 1)*3 // 4 ,     (mesh_size - 1) // 2  ],
+                             [   (mesh_size - 1)*3 // 4 ,   (mesh_size - 1)*3 // 4  ],
+                             [   (mesh_size - 1)*3 // 4 ,          (mesh_size - 1)  ], # top-mid mid-midpoints
+                             [     (mesh_size - 1) // 2 ,     (mesh_size - 1) // 4  ],
+                             [     (mesh_size - 1) // 2 ,   (mesh_size - 1)*3 // 4  ], # mid-mid mid-midpoints
+                             [     (mesh_size - 1) // 4 ,                        0  ],
+                             [     (mesh_size - 1) // 4 ,     (mesh_size - 1) // 4  ],
+                             [     (mesh_size - 1) // 4 ,     (mesh_size - 1) // 2  ],
+                             [     (mesh_size - 1) // 4 ,   (mesh_size - 1)*3 // 4  ],
+                             [     (mesh_size - 1) // 4 ,          (mesh_size - 1)  ], # bottom-mid mid-midpoints
+                             [                        0 ,     (mesh_size - 1) // 4  ],
+                             [                        0 ,   (mesh_size - 1)*3 // 4  ], # bottom mid-midpoints
+    ])
 
     points = np.array([[0.9, 0.4, 0.45],
                        [0.1, 0.4, 0.45],
                        [0.1, -0.4, 0.45],
-                       [0.9, -0.4, 0.45],
-                       [0.5, 0., 0.45],#])
+                       [0.9, -0.4, 0.45],   # corners
+                       [0.5, 0., 0.45],     # center
                        [0.5, 0.4, 0.45],
                        [0.5, -0.4, 0.45],
                        [0.9, 0.0, 0.45],
-                       [0.1, 0.0, 0.45]])
+                       [0.1, 0.0, 0.45],    # midpoints
+                       [0.3, 0.4, 0.45],
+                       [0.7, 0.4, 0.45],    # top mid-midpoints
+                       [0.1, 0.2, 0.45],
+                       [0.3, 0.2, 0.45],
+                       [0.5, 0.2, 0.45],
+                       [0.7, 0.2, 0.45],   
+                       [0.9, 0.2, 0.45],    # top-mid mid-midpoints
+                       [0.3, 0.0, 0.45],   
+                       [0.7, 0.0, 0.45],    # mid-mid mid-midpoints
+                       [0.1, -0.2, 0.45],
+                       [0.3, -0.2, 0.45],
+                       [0.5, -0.2, 0.45],
+                       [0.7, -0.2, 0.45],   
+                       [0.9, -0.2, 0.45],   # bottom-mid mid-midpoints
+                       [0.3, -0.4, 0.45],   
+                       [0.7, -0.4, 0.45],    # mid-mid mid-midpoints
+    ])
 
     # points = np.array([[ 0.41,   0.39,    0.15],       # 0
     #                    [-0.38,   0.42,   -0.05],     # 1
@@ -1392,23 +1432,30 @@ if __name__ == "__main__":
             # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
             # points += random_array
             points[0, 2] += 0.11 * oscillation(5.0 * i)
-            points[1, 2] += 0.13 * oscillation(7.0 * i + 1)
-            points[2, 2] -= 0.14 * oscillation(8.0 * i + 1.74)
-            points[3, 2] += 0.13 * oscillation(6.0 * i + 4.1)
+            points[1, 2] += 0.12 * oscillation(7.0 * i + 1)
+            points[2, 2] -= 0.11 * oscillation(8.0 * i + 1.74)
+            points[3, 2] += 0.09 * oscillation(6.0 * i + 4.1)
             points[4, 2] -= 0.12 * oscillation(2.5 * i + 3)
             points[5, 2] -= 0.10 * oscillation(3.1 * i + 1.2)
             points[6, 2] += 0.11 * oscillation(5.1 * i + 2.0)
-            points[7, 2] -= 0.13 * oscillation(0.9 * i - 0.5)
-            points[8, 2] += 0.13 * oscillation(4.1 * i - 1.1)
-            points[0, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-            points[1, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-            points[2, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-            points[3, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-            points[4, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-            points[5, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-            points[6, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-            points[7, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
-            points[8, :2] += 0.01 * np.array([np.cos(0.1 * i), np.sin(0.1 * i)])
+            points[7, 2] -= 0.09 * oscillation(0.9 * i - 0.5)
+            points[8, 2] += 0.11 * oscillation(4.1 * i - 1.1)
+            points[9, 2] += 0.11 * oscillation(5.0 * i)
+            points[10, 2] += 0.12 * oscillation(7.0 * i + 1)
+            points[11, 2] -= 0.11 * oscillation(8.0 * i + 1.74)
+            points[12, 2] += 0.09 * oscillation(6.0 * i + 4.1)
+            points[13, 2] -= 0.12 * oscillation(2.5 * i + 3)
+            points[14, 2] -= 0.10 * oscillation(3.1 * i + 1.2)
+            points[15, 2] += 0.11 * oscillation(5.1 * i + 2.0)
+            points[16, 2] -= 0.09 * oscillation(0.9 * i - 0.5)
+            points[17, 2] += 0.11 * oscillation(4.1 * i - 1.1)
+            points[18, 2] += 0.11 * oscillation(5.0 * i)
+            points[19, 2] += 0.12 * oscillation(7.0 * i + 1)
+            points[10, 2] -= 0.11 * oscillation(8.0 * i + 1.74)
+            points[21, 2] += 0.09 * oscillation(6.0 * i + 4.1)
+            points[22, 2] -= 0.12 * oscillation(2.5 * i + 3)
+            points[23, 2] -= 0.10 * oscillation(3.1 * i + 1.2)
+            points[24, 2] += 0.11 * oscillation(5.1 * i + 2.0)
             # points += np.random.normal(loc=0, scale=0.002, size=points.shape)
 
             # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
