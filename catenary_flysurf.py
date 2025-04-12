@@ -1053,30 +1053,22 @@ class FlysurfSampler:
                         connection_key = (point1, point2)
                         curve_length, catenary_param, other_data = flysurf.catenary_curve_params[connection_key]
                         if other_data:
-                            # Hah! We found a connection!
                             dist, rotation, translation, samples_per_connection = other_data
-                            if index1 == 0:
-                                num_samples = index2 - index1 - 1
-                                if not num_samples == 0:
-                                    if len(range(resolution // num_samples + 1, resolution, resolution // num_samples)) < num_samples:
-                                        full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[
-                                                                                            resolution // num_samples - 1:resolution:resolution // num_samples,
-                                                                                            :]
-                                    else:
-                                        full_curve_global[index1:index1 + num_samples, :] = samples_per_connection[
-                                                                                            resolution // num_samples + 1:resolution:resolution // num_samples,
-                                                                                            :]
-                            else:
-                                num_samples = index2 - index1
-                                step = resolution / num_samples
-                                indices = np.linspace(step / 2, resolution - step / 2, num=num_samples, dtype=int)
-                                full_curve_global[index1 - 1:index2 - 1, :] = samples_per_connection[indices, :]
-                                # num_samples = index2 - index1
-                                # print(full_curve_global)
-                                # print(index1 - 1, index2, resolution, num_samples, resolution // num_samples)
+                            # Calculate the number of samples needed between index1 and index2
+                            num_samples = index2 - index1
 
-                                # full_curve_global[index1 - 1:index2-1, :] = samples_per_connection[
-                                #                                           1:resolution:resolution // num_samples, :]
+                            # Ensure we have at least 2 samples (first and last)
+                            if num_samples > 1:
+                                # Generate evenly spaced indices including first and last elements
+                                step = len(samples_per_connection) / num_samples
+                                indices = [round(i * step) for i in range(num_samples)]
+                                
+                                if index1 == 0:
+                                    full_curve_global[index1: index2-1, :] = samples_per_connection[indices[1:], :]
+                                else:
+                                    # Perform the sampling
+                                    full_curve_global[index1-1: index2-1, :] = samples_per_connection[indices, :]
+
                             index1 = index2 - 1
                             break
                         else:
@@ -1350,7 +1342,7 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 41  # number of samples on the outermost sides
+    mesh_size = 17  # number of samples on the outermost sides
     points_coord = np.array([[            mesh_size - 1 ,            mesh_size - 1  ],
                              [            mesh_size - 1 ,                        0  ],
                              [                        0 ,                        0  ],
