@@ -1057,14 +1057,15 @@ class FlysurfSampler:
                             # Calculate the number of samples needed between index1 and index2
                             num_samples = index2 - index1
 
-                            # Ensure we have at least 2 samples (first and last)
-                            if num_samples > 1:
+                            # Ensure we have at least 1 sample
+                            if num_samples > 0:
                                 # Generate evenly spaced indices including first and last elements
                                 step = len(samples_per_connection) / num_samples
                                 indices = [round(i * step) for i in range(num_samples)]
                                 
                                 if index1 == 0:
-                                    full_curve_global[index1: index2-1, :] = samples_per_connection[indices[1:], :]
+                                    if num_samples > 1:
+                                        full_curve_global[index1: index2-1, :] = samples_per_connection[indices[1:], :]
                                 else:
                                     # Perform the sampling
                                     full_curve_global[index1-1: index2-1, :] = samples_per_connection[indices, :]
@@ -1342,7 +1343,7 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 17  # number of samples on the outermost sides
+    mesh_size = 5  # number of samples on the outermost sides
     points_coord = np.array([[            mesh_size - 1 ,            mesh_size - 1  ],
                              [            mesh_size - 1 ,                        0  ],
                              [                        0 ,                        0  ],
