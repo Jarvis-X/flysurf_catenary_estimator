@@ -4,7 +4,7 @@ from scipy.integrate import quad
 from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from joblib import Parallel, delayed
+# from joblib import Parallel, delayed
 import time
 from scipy.optimize import root_scalar
 import matplotlib
@@ -25,6 +25,343 @@ christmas_colors = [
 ]
 # Create a linear segmented colormap from these colors
 christmas_cmap = mcolors.LinearSegmentedColormap.from_list("christmas", christmas_colors, N=256)
+
+""" Utility functions
+"""
+def get_sample_coordinates_fast(index, sample_regions, triangle_coordinates, triangle_positions, params, flysurf):
+    i, j = flysurf._index2coord(index)
+    tri_idx = sample_regions[index]
+    tri_ij = triangle_coordinates[tri_idx]
+    tri_xyz = triangle_positions[tri_idx]
+    
+    # Barycentric interpolation
+    A = np.array([[tri_ij[0, 0], tri_ij[1, 0], tri_ij[2, 0]],
+                  [tri_ij[0, 1], tri_ij[1, 1], tri_ij[2, 1]],
+                  [1, 1, 1]])
+    b = np.array([i, j, 1])
+    lambdas = np.linalg.solve(A, b)
+    
+    x, y, _ = np.dot(lambdas, tri_xyz)
+    a, x0, y0, z0 = params
+    r = np.sqrt((x - x0)**2 + (y - y0)**2)
+    z = z0 + a * np.cosh(r / a)
+    
+    return (x, y, z)
+
+def cartesian_to_polar(x, y, x0, y0):
+    """Convert Cartesian (x,y) to polar (r, theta) relative to (x0, y0)."""
+    dx, dy = x - x0, y - y0
+    r = np.sqrt(dx**2 + dy**2)
+    theta = np.arctan2(dy, dx)
+    return r, theta
+
+def polar_to_cartesian(r, theta, x0, y0):
+    """Convert polar (r, theta) back to Cartesian (x, y)."""
+    x = x0 + r * np.cos(theta)
+    y = y0 + r * np.sin(theta)
+    return x, y
+
+def isothermal_to_polar(u, v, a):
+    """Convert isothermal coordinates (u, v) to polar (r, theta)."""
+    r = a * np.sinh(u / a)
+    theta = v
+    return r, theta
+
+def polar_to_isothermal(r, theta, a):
+    """Convert polar (r, theta) to isothermal (u, v)."""
+    u = a * np.arcsinh(r / a)
+    v = theta
+    return u, v
+
+def compute_conformal_map(triangle_ij, triangle_uv):
+    """
+    Compute the conformal map (affine transformation) from triangle in (i,j) space to (u,v) space.
+    Returns coefficients alpha, beta for the map f(i,j) = alpha*(i + 1j*j) + beta.
+    """
+    # Convert to complex numbers
+    w = triangle_ij[:, 0] + 1j * triangle_ij[:, 1]
+    f = triangle_uv[:, 0] + 1j * triangle_uv[:, 1]
+    
+    # Solve for alpha and beta in f = alpha * w + beta
+    A = np.vstack([w, np.ones_like(w)]).T
+    alpha, beta = np.linalg.lstsq(A, f, rcond=None)[0]
+    return alpha, beta
+
+def map_ij_to_uv(i, j, alpha, beta):
+    """Map grid index (i,j) to isothermal (u,v) using conformal coefficients."""
+    w = i + 1j * j
+    f = alpha * w + beta
+    return np.real(f), np.imag(f)
+
+def estimate_yaw_transformation(points1, points2):
+    if points1.shape[0] == 0:
+        return 0.0, np.zeros(3)
+    
+    # Step 1: Compute centroids
+    centroid1 = np.mean(points1, axis=0)
+    centroid2 = np.mean(points2, axis=0)
+    
+    # Step 2: Center the points
+    centered1 = points1 - centroid1
+    centered2 = points2 - centroid2
+    
+    # Step 3: Extract XY components
+    xy1 = centered1[:, :2]
+    xy2 = centered2[:, :2]
+    
+    # Step 4: Compute yaw angle using cross and dot products
+    cross = np.sum(xy1[:, 0] * xy2[:, 1] - xy1[:, 1] * xy2[:, 0])
+    dot = np.sum(xy1[:, 0] * xy2[:, 0] + xy1[:, 1] * xy2[:, 1])
+    yaw = np.arctan2(cross, dot)
+    
+    # Step 5: Construct 3D rotation matrix
+    cos_yaw = np.cos(yaw)
+    sin_yaw = np.sin(yaw)
+    R = np.array([
+        [cos_yaw, -sin_yaw, 0],
+        [sin_yaw,  cos_yaw, 0],
+        [0,        0,       1]
+    ])
+    
+    # Step 6: Compute translation
+    rotated_centroid1 = R @ centroid1
+    t = centroid2 - rotated_centroid1
+    
+    return yaw, t, R
+
+def transform_points(points, yaw, t):
+    cos_yaw = np.cos(yaw)
+    sin_yaw = np.sin(yaw)
+    R = np.array([
+        [cos_yaw, -sin_yaw, 0],
+        [sin_yaw,  cos_yaw, 0],
+        [0,        0,       1]
+    ])
+    return (R @ points.T).T + t
+
+def catenary_surface(params, u, v):
+    a, x_S, y_S, z_S = params
+    z = z_S + a * np.cosh(u / a)
+    x = x_S + u * np.cos(v)
+    y = y_S + u * np.sin(v)  
+    return np.column_stack((x, y, z))
+
+def cost_function(params, u, v, data):
+    prediction = catenary_surface(params, u, v)
+    residuals = prediction - data
+    return np.sum(residuals**2)
+
+def interpolate_and_convert_to_polar(p1, p2, n):
+    """
+    Interpolate between two Cartesian points and convert to polar coordinates.
+    
+    Args:
+        p1: First point as (x1, y1) or (x1, y1, z1)
+        p2: Second point as (x2, y2) or (x2, y2, z2)
+        n: Number of points to generate (including endpoints)
+        
+    Returns:
+        Tuple of (r_values, theta_values) where:
+        - r_values: Array of radii
+        - theta_values: Array of angles in radians [-π, π]
+        The output arrays have length n.
+    """
+    # Convert inputs to numpy arrays
+    p1 = np.array(p1[:2])[::-1]  # Only use x,y coordinates
+    p2 = np.array(p2[:2])[::-1]
+    
+    # Generate n evenly spaced points between p1 and p2
+    t = np.linspace(0, 1, n)
+    points = np.outer(1 - t, p1) + np.outer(t, p2)
+    
+    # Convert to polar coordinates
+    x = points[:, 0]
+    y = points[:, 1]
+    r = np.sqrt(x**2 + y**2)
+    theta = np.arctan2(y, x)
+    
+    return r, theta
+
+def compute_intersection(p1, p2, q1, q2):
+    """
+    Compute the intersection of two line segments defined by endpoints p1 -> p2 and q1 -> q2.
+    Returns the intersection point if it exists and lies within both line segments, otherwise None.
+    """
+    A = np.array([p2 - p1, q1 - q2]).T
+    b = q1 - p1
+
+    try:
+        t, s = np.linalg.solve(A, b)  # Solve for parameters t and s
+        if 0 <= t <= 1 and 0 <= s <= 1:  # Ensure the intersection lies within both segments
+            return (1 - t) * p1 + t * p2  # Compute intersection point
+    except np.linalg.LinAlgError:
+        pass  # Lines are parallel or coincident
+
+    return None
+
+def find_all_intersections_batch(S1, S2):
+    """
+    Optimized function to find all intersections between line segments in S1 and S2 using numpy batch operations.
+    S1 and S2 are arrays of shape (N, 2, 2) and (M, 2, 2), where each segment is defined by two endpoints [p1, p2].
+    Returns an array of intersection points.
+    """
+    S1 = np.array(S1)  # Ensure input is a numpy array
+    S2 = np.array(S2)
+
+    p1 = S1[:, 0, :]  # Start points of segments in S1
+    p2 = S1[:, 1, :]  # End points of segments in S1
+    q1 = S2[:, 0, :]  # Start points of segments in S2
+    q2 = S2[:, 1, :]  # End points of segments in S2
+
+    # Direction vectors for segments
+    d1 = p2 - p1  # Direction vectors for S1
+    d2 = q2 - q1  # Direction vectors for S2
+
+    # Cross product for batch determinant computation
+    cross_d1_d2 = np.cross(d1[:, None], d2)
+    cross_q1_p1_d2 = np.cross(q1[None, :] - p1[:, None], d2)
+    cross_p1_q1_d1 = np.cross(p1[:, None] - q1, d1)
+
+    # Avoid division by zero (parallel lines) by masking invalid values
+    valid_mask = cross_d1_d2 != 0
+
+    # Solve for t and s only where valid
+    t = np.where(valid_mask, cross_q1_p1_d2 / cross_d1_d2, np.nan)
+    s = np.where(valid_mask, cross_p1_q1_d1 / cross_d1_d2, np.nan)
+
+    # Compute intersection points where valid
+    intersections = p1[:, None] + t[..., None] * d1[:, None]
+    return intersections.reshape(-1, 2)
+
+def find_triangles(points, triangles):
+    """
+    Fully vectorized triangle finding with fallback to closest triangle.
+    
+    Parameters:
+    - points: Array of shape (n_points, 2)
+    - triangles: Array of shape (n_triangles, 3, 2)
+    
+    Returns:
+    - Array of shape (n_points,) with triangle indices
+    """
+    n_points = points.shape[0]
+    n_triangles = triangles.shape[0]
+    
+    # Precompute triangle properties
+    A = triangles[:, 0, :]  # shape (n_triangles, 2)
+    B = triangles[:, 1, :]
+    C = triangles[:, 2, :]
+    centroids = np.mean(triangles, axis=1)  # shape (n_triangles, 2)
+    
+    # Vectorized barycentric coordinate calculation
+    denominator = ((B[:, 1] - C[:, 1]) * (A[:, 0] - C[:, 0]) + 
+                 (C[:, 0] - B[:, 0]) * (A[:, 1] - C[:, 1]))  # shape (n_triangles,)
+    
+    # Reshape for broadcasting (n_points, n_triangles, 2)
+    P = points[:, np.newaxis, :]  # shape (n_points, 1, 2)
+    A = A[np.newaxis, :, :]  # shape (1, n_triangles, 2)
+    B = B[np.newaxis, :, :]
+    C = C[np.newaxis, :, :]
+    
+    # Batch compute barycentric coordinates
+    u_numerator = (B[..., 1] - C[..., 1]) * (P[..., 0] - C[..., 0]) + (C[..., 0] - B[..., 0]) * (P[..., 1] - C[..., 1])
+    u = u_numerator / denominator[np.newaxis, :]
+    
+    v_numerator = (C[..., 1] - A[..., 1]) * (P[..., 0] - C[..., 0]) + (A[..., 0] - C[..., 0]) * (P[..., 1] - C[..., 1])
+    v = v_numerator / denominator[np.newaxis, :]
+    
+    w = 1 - u - v
+    
+    # Find containing triangles (with tolerance)
+    contains = (u >= -1e-10) & (v >= -1e-10) & (w >= -1e-10)  # shape (n_points, n_triangles)
+    
+    # For each point, get first containing triangle (or -1)
+    point_triangle_indices = np.argmax(contains, axis=1)  # Gets first True if exists
+    point_triangle_indices[~np.any(contains, axis=1)] = -1  # Mark points with no containing triangle
+    
+    # Fallback for points not in any triangle
+    if np.any(point_triangle_indices == -1):
+        missing_mask = (point_triangle_indices == -1)
+        distances = cdist(points[missing_mask], centroids)
+        closest_tris = np.argmin(distances, axis=1)
+        point_triangle_indices[missing_mask] = closest_tris
+        
+        # Optional: Verify points are at least in bounding boxes
+        tri_verts = triangles[closest_tris]
+        x_in_bb = (points[missing_mask, 0] >= tri_verts[:, :, 0].min(axis=1)) & (points[missing_mask, 0] <= tri_verts[:, :, 0].max(axis=1))
+        y_in_bb = (points[missing_mask, 1] >= tri_verts[:, :, 1].min(axis=1)) & (points[missing_mask, 1] <= tri_verts[:, :, 1].max(axis=1))
+        outliers = missing_mask.copy()
+        outliers[missing_mask] = ~(x_in_bb & y_in_bb)
+        
+        if np.any(outliers):
+            print(f"Warning: {np.sum(outliers)} points assigned to non-containing triangles")
+    
+    return point_triangle_indices
+
+def drag_points_vectorized(A, control_indices, B, sigma, alpha=None):
+    """
+    Drag points in A based on control points and their target positions, with a per-control-point sigma.
+
+    Parameters:
+    A : ndarray of shape (n, 3)
+        The original 3D points.
+    control_indices : array-like of int
+        Indices of control points in A that are dragged.
+    B : ndarray of shape (k, 3)
+        The target positions for the control points.
+    sigma : ndarray of shape (k,)
+        Gaussian spread for each control point; smaller values make the influence more local.
+    alpha : ndarray of shape (k,), optional
+        Weight of effect for each control point. Larger values amplify the influence.
+        If None, defaults to all ones.
+
+    Returns:
+    A_new : ndarray of shape (n, 3)
+        The updated 3D points after applying the drag.
+    """
+    # Ensure sigma is a numpy array and has proper dimensions.
+    sigma = np.asarray(sigma)
+    if sigma.ndim != 1 or sigma.shape[0] != B.shape[0]:
+        raise ValueError("sigma must be a 1D array with the same length as the number of control points in B")
+    
+    # Validate alpha
+    if alpha is None:
+        alpha = np.ones(B.shape[0])
+    else:
+        alpha = np.asarray(alpha)
+        if alpha.ndim != 1 or alpha.shape[0] != B.shape[0]:
+            raise ValueError("alpha must be a 1D array with the same length as B")
+
+    # Extract control points from A and compute their displacements
+    A_control = A[control_indices]  # shape (k, 3)
+    d = B - A_control  # shape (k, 3)
+
+    # Compute differences between every point in A and each control point:
+    # diff has shape (n, k, 3)
+    diff = A[:, None, :] - A_control[None, :, :]
+
+    # Compute squared Euclidean distances, shape (n, k)
+    dist_sq = np.sum(diff ** 2, axis=2)
+
+    # Use broadcasting to compute per-control-point Gaussian weights.
+    # (sigma**2) is of shape (k,), so we add a new axis to broadcast over n.
+    weights = alpha[None, :] * np.exp(-dist_sq / (sigma ** 2)[None, :])
+
+    # Compute the weighted displacement for each point in A.
+    # weights[..., None] has shape (n, k, 1), d[None, :, :] has shape (1, k, 3)
+    weighted_disp = np.sum(weights[..., None] * d[None, :, :], axis=1)
+
+    # Normalize by the sum of weights for each point to get the average displacement.
+    weight_sum = np.sum(weights, axis=1)[:, None]
+
+    # Update A with the computed displacements.
+    A_new = A + weighted_disp / weight_sum
+
+    return A_new
+
+
+def oscillation(i):
+    return np.sin(i * np.pi / 100) * 0.05
 
 
 def batch_surf_sampling(intersections, surf_info, flysurf):
@@ -114,53 +451,111 @@ def batch_surf_sampling(intersections, surf_info, flysurf):
 
     return z_vals
 
+def sample_entire_grid(n, triangle_coordinates, cartesian_coordinates, flysurf):
+    """
+    Sample all points on an n x n grid using conformal mapping.
+    
+    Args:
+        n: Grid resolution (n x n).
+        triangle_coordinates: Array of shape (num_triangles, 3, 2) of (i,j) vertices.
+        cartesian_coordinates: Array of shape (num_triangles, 3, 3) of (x,y,z) vertices.
+        flysurf: Object with _coord2index, _index2coord, and catenary_surface_params.
+    
+    Returns:
+        samples: Array of shape (n, n, 3) containing (x,y,z) for each grid point.
+        triangle_ids: Array of shape (n, n) containing which triangle each point belongs to.
+    """
+    # Initialize output arrays
+    samples = np.zeros((n, n, 3)) * np.nan
+    triangle_ids = np.zeros((n, n), dtype=int) - 1  # -1 means unassigned
+    
+    # Precompute all grid indices (0-indexed)
+    ii, jj = np.meshgrid(np.arange(n), np.arange(n), indexing='ij')
+    all_ij = np.stack([ii.ravel(), jj.ravel()], axis=1)
+    
+    # Process all triangles
+    for tri_idx in range(len(triangle_coordinates)):
+        tri_ij = triangle_coordinates[tri_idx]
+        tri_xyz = cartesian_coordinates[tri_idx]
+        
+        # Get catenoid parameters for this triangle
+        key = tuple(sorted([flysurf._coord2index(vertex) for vertex in tri_ij]))
+        try:
+            params = flysurf.catenary_surface_params[key][:4]
+        except KeyError:
+            continue  # Skip if no parameters available
+        a, x0_cat, y0_cat, z0_cat = params
+        
+        # Convert triangle corners to isothermal (u, v)
+        uv_corners = []
+        for (x, y, _) in tri_xyz:
+            r, theta = cartesian_to_polar(x, y, x0_cat, y0_cat)
+            u_iso, v_iso = polar_to_isothermal(r, theta, a)
+            uv_corners.append([u_iso, v_iso])
+        uv_corners = np.array(uv_corners)
+        
+        # Compute conformal map from (i,j) to (u,v)
+        alpha, beta = compute_conformal_map(tri_ij, uv_corners)
+        
+        # Find all grid points inside this triangle
+        A = np.array([
+            [tri_ij[0, 0], tri_ij[1, 0], tri_ij[2, 0]],
+            [tri_ij[0, 1], tri_ij[1, 1], tri_ij[2, 1]],
+            [1, 1, 1]
+        ])
+        
+        # Vectorized barycentric coordinate check
+        b = np.column_stack([all_ij.T, np.ones(len(all_ij))])
+        lambdas = np.linalg.solve(A, b.T).T
+        
+        inside = np.all(lambdas >= -1e-10, axis=1)  # Small tolerance for numerical stability
+        inside_ij = all_ij[inside]
+        
+        # Map all interior points
+        for i, j in inside_ij:
+            if triangle_ids[i, j] != -1:
+                continue  # Skip already assigned points (optional: keep first or closest)
+            
+            # Convert to Cartesian coordinates
+            u_iso, v_iso = map_ij_to_uv(i, j, alpha, beta)
+            r, theta = isothermal_to_polar(u_iso, v_iso, a)
+            x, y = polar_to_cartesian(r, theta, x0_cat, y0_cat)
+            z = z0_cat + a * np.cosh(r / a)
+            
+            samples[i, j] = [x, y, z]
+            triangle_ids[i, j] = tri_idx
+    
+    # Handle any remaining unassigned points (fallback to barycentric interpolation)
+    unassigned = np.where(triangle_ids == -1)
+    for i, j in zip(*unassigned):
+        # Find closest triangle (simplified fallback - can be improved)
+        for tri_idx in range(len(triangle_coordinates)):
+            tri_ij = triangle_coordinates[tri_idx]
+            tri_xyz = cartesian_coordinates[tri_idx]
+            
+            # Barycentric interpolation as fallback
+            A = np.array([
+                [tri_ij[0, 0], tri_ij[1, 0], tri_ij[2, 0]],
+                [tri_ij[0, 1], tri_ij[1, 1], tri_ij[2, 1]],
+                [1, 1, 1]
+            ])
+            b = np.array([i, j, 1])
+            try:
+                lambdas = np.linalg.solve(A, b)
+            except np.linalg.LinAlgError:
+                continue
+            
+            if np.all(lambdas >= -1e-10):
+                x, y, z = np.dot(lambdas, tri_xyz)
+                samples[i, j] = [x, y, z]
+                triangle_ids[i, j] = tri_idx
+                break
+    
+    return samples
 
-def barycentric_test_with_distance(point, p1, p2, p3):
-    # Convert all points to numpy arrays
-    p1 = np.array(p1)
-    p2 = np.array(p2)
-    p3 = np.array(p3)
-    point = np.array(point)
-
-    v0 = p3 - p1
-    v1 = p2 - p1
-    v2 = point - p1
-
-    # Compute dot products
-    dot00 = np.dot(v0, v0)
-    dot01 = np.dot(v0, v1)
-    dot02 = np.dot(v0, v2)
-    dot11 = np.dot(v1, v1)
-    dot12 = np.dot(v1, v2)
-
-    denom = dot00 * dot11 - dot01 ** 2
-    is_inside = False
-
-    if denom != 0:
-        # Compute barycentric coordinates
-        u = (dot11 * dot02 - dot01 * dot12) / denom
-        v = (dot00 * dot12 - dot01 * dot02) / denom
-        is_inside = (u >= 0) and (v >= 0) and (u + v <= 1)
-
-    if is_inside:
-        return 0.0  # Point is inside the triangle
-    else:
-        # Helper function to compute distance from a point to a line segment
-        def distance_to_segment(P, A, B):
-            AP = P - A
-            AB = B - A
-            t = np.dot(AP, AB) / np.dot(AB, AB)
-            t_clamped = np.clip(t, 0.0, 1.0)
-            closest_point = A + t_clamped * AB
-            return np.linalg.norm(P - closest_point)
-
-        # Compute distances to all three edges of the triangle
-        d1 = distance_to_segment(point, p1, p2)
-        d2 = distance_to_segment(point, p2, p3)
-        d3 = distance_to_segment(point, p3, p1)
-
-        return min(d1, d2, d3)  # Minimum distance to the triangle
-
+""" 
+Flysurf related classes
+"""
 
 class CatenarySurfaceOptimizer:
     def __init__(self, surface_points, num_samples, num_edges):
@@ -208,7 +603,6 @@ class CatenarySurfaceOptimizer:
         )
         return result
 
-
 class CatenaryFlySurf:
     def __init__(self, lc, lr, l_cell, num_sample_per_curve=10):
         self.log_catenary_time = []
@@ -223,7 +617,7 @@ class CatenaryFlySurf:
 
         # stores catenary-related data based on vertex indices
         self.catenary_curve_params = dict()  # [(Vi, Vj)]: [curve length, last stored c x y, other data]
-        self.catenary_surface_params = dict()  #
+        self.catenary_surface_params = dict()  # [(V1, V2, V3)]: [a, x0, y0, z0, p1, p2, p3]
 
         for i in range(self.num_points):
             for j in range(i + 1, self.num_points):
@@ -269,10 +663,14 @@ class CatenaryFlySurf:
         self._build_catenary_network(parallelize=False)
         self.log_catenary_time.append(time.time() - time_start_build_catenary_network)
 
-        num_samples = self.num_samples
-
         # for estimating the surface
         time_start_estimating_surface = time.time()
+        self._catenary_surface_fitting_v1()
+        # input("Press Enter to continue...")  # For debugging purposes
+        self.log_surface_time.append(time.time() - time_start_estimating_surface)
+
+    def _catenary_surface_fitting_v1(self):
+        num_samples = self.num_samples
         for i, surface in enumerate(self.active_surface):
             num_vertices = len(surface)
             num_edges = num_vertices
@@ -285,60 +683,67 @@ class CatenaryFlySurf:
                     surface_points[(index) * num_samples:(index + 1) * num_samples, :] = sample_points
                     index += 1
 
-            initial_guess = self.catenary_surface_params[surface]
+            initial_guess = self.catenary_surface_params[surface][:4]
             if np.isnan(initial_guess[0]):
                 initial_guess[0] = 0.5
             initial_guess = np.nan_to_num(initial_guess, nan=0.0)
-            # x = surface_points[:, 0]
-            # y = surface_points[:, 1]
-            # z = surface_points[:, 2]
             optimizer = CatenarySurfaceOptimizer(surface_points, num_samples, num_edges)
             result = optimizer.fit(initial_guess=initial_guess)
-            # result = least_squares(self._residuals, initial_guess, args=(x, y, z))
-            self.catenary_surface_params[surface] = result.x
+            self.catenary_surface_params[surface][:4] = result.x
 
-        self.log_surface_time.append(time.time() - time_start_estimating_surface)
 
-    def _generate_mesh_in_triangle(self, p1, p2, p3, resolution=10):
-        """
-        Generate a mesh grid enclosed by a triangle defined by three 2D points.
+    def _catenary_surface_fitting_v2(self, points_coord, points_position):
+        yaw, t, R = estimate_yaw_transformation(points_position, np.hstack([points_coord, np.zeros((points_coord.shape[0], 1))]))
+        num_samples = self.num_samples 
+        for i, surface in enumerate(self.active_surface):
+            num_vertices = len(surface)
+            num_edges = num_vertices
+            surface_points = np.zeros((num_edges * num_samples, 3))
+            points_coord_u = np.zeros((num_edges * num_samples))
+            points_coord_v = np.zeros((num_edges * num_samples))
+            index = 0 
 
-        Parameters:
-            p1, p2, p3 (tuple): Vertices of the triangle, each represented as (x, y).
-            resolution (int): Number of points along each side of the triangle.
+            # we need to find the sample points on the edges of the surface, associating their Cartisian and polar coordinates
+            for j in range(num_vertices):
+                for k in range(j + 1, num_vertices):
+                    # obtain the edges of a surface 
+                    edge = tuple(sorted((surface[j], surface[k])))
+                    # find the edge endpoints' coordinates in Euclidean Space
+                    rl_start = np.array(self._index2coord(edge[0]))*self.cell_length
+                    rl_end = np.array(self._index2coord(edge[1]))*self.cell_length
+                    # take samples on the edge in polar coordinates
+                    u, v = interpolate_and_convert_to_polar(rl_start, rl_end, num_samples)
+                    # print(u, v, rl_start, rl_end)
+                    # input()
+                    points_coord_u[index * num_samples:(index + 1) * num_samples] = u
+                    points_coord_v[index * num_samples:(index + 1) * num_samples] = v
 
-        Returns:
-            tuple: Two 2D arrays (x_mesh, y_mesh) representing the mesh grid points.
-        """
-        # Create a bounding grid
-        x_min = min(p1[0], p2[0], p3[0])
-        x_max = max(p1[0], p2[0], p3[0])
-        y_min = min(p1[1], p2[1], p3[1])
-        y_max = max(p1[1], p2[1], p3[1])
+                    surface_points[index * num_samples:(index + 1) * num_samples, :] = self.catenary_curve_params[edge][2][-1]
+                    index += 1
 
-        x_grid = np.linspace(x_min, x_max, resolution)
-        y_grid = np.linspace(y_min, y_max, resolution)
-        x_mesh, y_mesh = np.meshgrid(x_grid, y_grid)
+            # Initial guess
+            initial_guess = self.catenary_surface_params[surface][:4]
+            if np.isnan(initial_guess[0]):
+                initial_guess[0] = 0.5
+            initial_guess = np.nan_to_num(initial_guess, nan=0.0)
 
-        # Flatten the mesh grids
-        x_flat = x_mesh.flatten()
-        y_flat = y_mesh.flatten()
-
-        # Create a matrix of points
-        points = np.vstack((x_flat, y_flat)).T
-
-        # Barycentric test to check if points are inside the triangle
-
-        inside = np.array([self._barycentric_test(point, p1, p2, p3) for point in points])
-
-        # Filter points inside the triangle
-        x_inside = x_flat[inside]
-        y_inside = y_flat[inside]
-
-        return x_inside.reshape(-1, 1), y_inside.reshape(-1, 1)
-
-    def _barycentric_test(self, point, p1, p2, p3):
-        return barycentric_test_with_distance(point, p1, p2, p3) == 0
+            # Optimization using minimize
+            surface_points = transform_points(surface_points, yaw, t)
+            result = minimize(
+                fun=cost_function,
+                x0=initial_guess,
+                args=(points_coord_u, points_coord_v, surface_points),
+                method='L-BFGS-B',  # Can also try 'TNC' or 'SLSQP' for bounded problems
+                bounds = [
+                    (1e-3, None),  # a (must be positive)
+                    (None, None),  # x_S
+                    (None, None),  # y_S
+                    (None, None),  # z_S
+                ],
+                options={'maxiter': 1000, 'disp': False}  # Set disp=True for debugging
+            )
+            # print(result.x)
+            self.catenary_surface_params[surface][:4] = result.x
 
     def _catenary_surface(self, params, x, y):
         a, x0, y0, z0 = params
@@ -347,100 +752,6 @@ class CatenaryFlySurf:
     # Define the residual function for least squares
     def _residuals(self, params, x, y, z):
         return z - self._catenary_surface(params, x, y)
-
-    def _generate_planar_graph(self, network_coords, points):
-        """
-        Generate a planar graph from 3D point positions by projecting to 2D and connecting neighbors.
-        Parameters:
-            network_coords (ndarray):
-            points (ndarray): each row is a 3D point (x, y, z).
-
-        Returns:
-            edges: A list of edges, where each edge is represented by the indices of the points it connects.
-        """
-        # Project points to 2D by discarding the z-coordinate
-        points_array = np.array(points)
-        points_2d = network_coords  # points_array[:, :2] #
-
-        # Number of points
-        n_points = points_2d.shape[0]
-
-        # Collect edges
-        edges_set = set()
-        edges = dict()
-
-        def dfs_pairs(L, i=0, visited=None):
-            if visited is None:
-                visited = set()
-            for j in range(i + 1, len(L)):
-                if tuple(sorted((i, j))) not in visited:
-                    visited.add(tuple(sorted((i, j))))
-                    yield (L[i], L[j])
-                    yield from dfs_pairs(L, j, visited)
-
-        # ij_pairs = list(dfs_pairs(range(n_points)))
-        #
-        # for i, j in ij_pairs:
-        for i in range(n_points):
-            for j in range(i + 1, n_points):
-                intersection = False
-                for e1, e2 in edges_set:
-                    if self._intersect(points_2d[i], points_2d[j], points_2d[e1], points_2d[e2]):
-                        intersection = True
-                        # if points[i][2] + points[j][2] > points[e1][2] + points[e2][2]:
-                        #     higher = tuple(sorted((e1, e2)))
-                        break
-                if not intersection:
-                    coord1 = int(self._coord2index(network_coords[i]))
-                    coord2 = int(self._coord2index(network_coords[j]))
-                    key = [coord1, coord2]
-                    val = [points_array[i, :], points_array[j, :]]
-                    key, val = zip(*sorted(zip(key, val)))
-                    key = tuple(key)
-                    edges[key] = val
-                    local_indices = tuple(sorted((i, j)))
-                    edges_set.add(local_indices)
-
-        # Generate triangle surfaces
-        active_surface = []
-        for i in range(n_points):
-            for j in range(i + 1, n_points):
-                for k in range(j + 1, n_points):
-                    # Check if edges exist
-                    if (i, j) in edges_set and (j, k) in edges_set and (i, k) in edges_set:
-                        coord1 = int(self._coord2index(network_coords[i]))
-                        coord2 = int(self._coord2index(network_coords[j]))
-                        coord3 = int(self._coord2index(network_coords[k]))
-                        key = tuple(sorted((coord1, coord2, coord3)))
-
-                        # 1) Build the actual 3D (or 2D) coordinates for the new triangle
-                        triangle_new = [
-                            network_coords[i],  # e.g. (x_i, y_i, z_i)
-                            network_coords[j],
-                            network_coords[k]
-                        ]
-
-                        # 2) Check geometry vs. existing triangles
-                        exclude_new = False
-
-                        for tri_key in active_surface:
-                            # Reconstruct the old triangle from tri_key -> tri_old
-                            tcoords = [self._index2coord(idx) for idx in tri_key]
-
-                            # Decide if triangle_new is inside or encloses tri_old
-                            # (or they share the same plane, etc.)
-                            if self.is_inside(triangle_new, tcoords) or self.is_enclosing(triangle_new, tcoords):
-                                exclude_new = True
-                                break
-
-                        # 3) If still valid after geometry check, add
-                        if not exclude_new:
-                            if key not in self.catenary_surface_params:
-                                self.catenary_surface_params[key] = [0.5, 0, 0, 0]
-                            active_surface.append(key)
-
-        self.active_surface = active_surface
-        return edges
 
 
     def _generate_planar_graph_delaunay(self, network_coords, points):
@@ -464,7 +775,7 @@ class CatenaryFlySurf:
             simplices[:, [1, 2]],
             simplices[:, [2, 0]]))
         edges_index.sort(axis=1)
-        np.unique(edges_index, axis=0)
+        # edges_index = np.unique(edges_index, axis=0)
 
         # Collect edges
         edges = dict()
@@ -488,63 +799,18 @@ class CatenaryFlySurf:
             coord1 = int(self._coord2index(network_coords[i]))
             coord2 = int(self._coord2index(network_coords[j]))
             coord3 = int(self._coord2index(network_coords[k]))
-            key = tuple(sorted((coord1, coord2, coord3)))
+            key = [coord1, coord2, coord3]
+            val = [points_array[i, :], points_array[j, :], points_array[k, :]]
+            key, val = zip(*sorted(zip(key, val)))
 
             if key not in self.catenary_surface_params:
-                # print(key)
-                self.catenary_surface_params[key] = [0.5, 0, 0, 0]
+                self.catenary_surface_params[key] = [0.5, 0, 0, 0, val]
+            else:
+                self.catenary_surface_params[-1] = val
             active_surface.append(key)
 
         self.active_surface = active_surface
         return edges
-
-
-    def is_inside(self, triA, triB):
-        """
-        Returns True if all vertices of triA are inside triB.
-        triA and triB are lists of 2D or 3D points (or after projection).
-        """
-        # For each vertex in triA, check if it's inside triB
-        for pt in triA:
-            if not self._barycentric_test(pt, triB[0], triB[1], triB[2]):
-                return False
-        return True
-
-    def point_in_triangle(self, pt, v1, v2, v3):
-        """
-        Returns True if pt is inside the triangle formed by v1, v2, v3 (2D coordinates).
-        """
-        # Transform points into arrays for convenience
-        p = np.array(pt)
-        a = np.array(v1)
-        b = np.array(v2)
-        c = np.array(v3)
-
-        # Compute vectors
-        v0 = c - a
-        v1_ = b - a
-        v2_ = p - a
-
-        # Dot products
-        dot00 = v0.dot(v0)
-        dot01 = v0.dot(v1_)
-        dot02 = v0.dot(v2_)
-        dot11 = v1_.dot(v1_)
-        dot12 = v1_.dot(v2_)
-
-        # Barycentric coordinates
-        invDenom = 1.0 / (dot00 * dot11 - dot01 * dot01)
-        u = (dot11 * dot02 - dot01 * dot12) * invDenom
-        v = (dot00 * dot12 - dot01 * dot02) * invDenom
-
-        # Check if point is in triangle
-        return (u > 0) and (v > 0) and (u + v < 1)
-
-    def is_enclosing(self, triA, triB):
-        """
-        Returns True if triA encloses triB (i.e. all vertices of triB are inside triA).
-        """
-        return self.is_inside(triB, triA)
 
     def _build_catenary_network(self, parallelize=False):
         """
@@ -835,147 +1101,6 @@ class CatenaryFlySurf:
         j = index - i * self.lc
         return i, j
 
-
-def visualize(fig, ax, flysurf, plot_dot=True, plot_curve=True, plot_surface=True, num_samples=10):
-    for i, connection in enumerate(flysurf.active_ridge):
-        # Retrieve curve parameters and sampled points
-        V1, V2 = connection
-        i1, j1 = flysurf._index2coord(V1)
-        i2, j2 = flysurf._index2coord(V2)
-        curve_length, catenary_param, other_data = flysurf.catenary_curve_params[tuple(sorted((V1, V2)))]
-        c, x0, z0 = catenary_param
-        dist, rotation, translation, samples_per_connection = other_data
-
-        if plot_dot:
-            # Plot the sampled points on the curve
-            ax.scatter(
-                samples_per_connection[1:flysurf.num_samples - 1, 0],
-                samples_per_connection[1:flysurf.num_samples - 1, 1],
-                samples_per_connection[1:flysurf.num_samples - 1, 2],
-                color="black",
-                label=f"Sampled Points {i}"
-            )
-
-            ax.scatter(
-                samples_per_connection[0, 0],
-                samples_per_connection[0, 1],
-                samples_per_connection[0, 2],
-                color="red",
-                label=f"Endpoints {i}"
-            )
-
-            ax.scatter(
-                samples_per_connection[-1, 0],
-                samples_per_connection[-1, 1],
-                samples_per_connection[-1, 2],
-                color="red",
-                label=f"Endpoints {i}"
-            )
-        if plot_curve:
-            x_end = np.linalg.norm(samples_per_connection[-1][:2] - samples_per_connection[0][:2])
-
-            # Plot the full catenary curve
-            x_full = np.linspace(0, x_end, num_samples)  # sampling
-            z_full = c * np.cosh((x_full - x0) / c) + z0
-            y_full = np.zeros_like(x_full)
-            full_curve_local = np.vstack((x_full, y_full, z_full)).T
-            full_curve_global = rotation.inv().apply(full_curve_local) + translation
-            ax.plot(
-                full_curve_global[:, 0],
-                full_curve_global[:, 1],
-                full_curve_global[:, 2],
-                "*",
-                alpha=0.75,
-                label=f"Curve {i}",
-                linewidth=2
-            )
-    if plot_surface:
-        for i, surface in enumerate(flysurf.active_surface):
-            num_edges = len(surface)
-            c, x, y, z = flysurf.catenary_surface_params[surface]
-            points = []
-            for j in range(num_edges):
-                for k in range(j + 1, num_edges):
-                    edge = tuple(sorted((surface[j], surface[k])))
-                    for v in flysurf.active_ridge[edge]:
-                        good = True
-                        for p in points:
-                            if np.allclose(v, p):
-                                good = False
-                                break
-                        if good:
-                            points.append(v)
-
-            x_mesh, y_mesh = flysurf._generate_mesh_in_triangle(np.array(points[0])[:2],
-                                                                np.array(points[1])[:2],
-                                                                np.array(points[2])[:2], num_samples)
-
-            # Compute the fitted z-values
-            z_mesh = flysurf._catenary_surface((c, x, y, z), x_mesh, y_mesh)
-
-            # Plot the fitted catenary surface
-            try:
-                # ax.plot_trisurf(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), cmap=christmas_cmap, alpha=1.0, edgecolor='none')
-                ax.plot(x_mesh.flatten(), y_mesh.flatten(), z_mesh.flatten(), "*")
-            except:
-                pass
-
-    plt.pause(0.0001)
-
-
-def compute_intersection(p1, p2, q1, q2):
-    """
-    Compute the intersection of two line segments defined by endpoints p1 -> p2 and q1 -> q2.
-    Returns the intersection point if it exists and lies within both line segments, otherwise None.
-    """
-    A = np.array([p2 - p1, q1 - q2]).T
-    b = q1 - p1
-
-    try:
-        t, s = np.linalg.solve(A, b)  # Solve for parameters t and s
-        if 0 <= t <= 1 and 0 <= s <= 1:  # Ensure the intersection lies within both segments
-            return (1 - t) * p1 + t * p2  # Compute intersection point
-    except np.linalg.LinAlgError:
-        pass  # Lines are parallel or coincident
-
-    return None
-
-
-def find_all_intersections_batch(S1, S2):
-    """
-    Optimized function to find all intersections between line segments in S1 and S2 using numpy batch operations.
-    S1 and S2 are arrays of shape (N, 2, 2) and (M, 2, 2), where each segment is defined by two endpoints [p1, p2].
-    Returns an array of intersection points.
-    """
-    S1 = np.array(S1)  # Ensure input is a numpy array
-    S2 = np.array(S2)
-
-    p1 = S1[:, 0, :]  # Start points of segments in S1
-    p2 = S1[:, 1, :]  # End points of segments in S1
-    q1 = S2[:, 0, :]  # Start points of segments in S2
-    q2 = S2[:, 1, :]  # End points of segments in S2
-
-    # Direction vectors for segments
-    d1 = p2 - p1  # Direction vectors for S1
-    d2 = q2 - q1  # Direction vectors for S2
-
-    # Cross product for batch determinant computation
-    cross_d1_d2 = np.cross(d1[:, None], d2)
-    cross_q1_p1_d2 = np.cross(q1[None, :] - p1[:, None], d2)
-    cross_p1_q1_d1 = np.cross(p1[:, None] - q1, d1)
-
-    # Avoid division by zero (parallel lines) by masking invalid values
-    valid_mask = cross_d1_d2 != 0
-
-    # Solve for t and s only where valid
-    t = np.where(valid_mask, cross_q1_p1_d2 / cross_d1_d2, np.nan)
-    s = np.where(valid_mask, cross_p1_q1_d1 / cross_d1_d2, np.nan)
-
-    # Compute intersection points where valid
-    intersections = p1[:, None] + t[..., None] * d1[:, None]
-    return intersections.reshape(-1, 2)
-
-
 class FlysurfSampler:
     def __init__(self, flysurf, resolution, points=None, coordinates=None):
         self.flysurf = flysurf
@@ -983,7 +1108,7 @@ class FlysurfSampler:
         if points is None:
             self.filtered_samples = np.zeros((resolution ** 2, 3))
         else:
-            self.filtered_samples = self.sampling_v1(None, None, points, coordinates)
+            self.filtered_samples = self.sampling_v3(None, None, points, coordinates)
         self.vel = np.zeros((resolution ** 2, 3))
 
     def sampling_v1(self, fig, ax, points, coordinates, plot=False):
@@ -1117,7 +1242,7 @@ class FlysurfSampler:
         surf_info = []
         for i, surface in enumerate(flysurf.active_surface):
             num_edges = len(surface)
-            c, x, y, z = flysurf.catenary_surface_params[surface]
+            c, x, y, z = flysurf.catenary_surface_params[surface][:4]
             surf_corners = []
             for j in range(num_edges):
                 for k in range(j + 1, num_edges):
@@ -1169,6 +1294,99 @@ class FlysurfSampler:
             plt.pause(0.0001)
         return all_samples
 
+    def sampling_v2(self, fig, ax, points, coordinates, plot=False):
+        """ NOTE:
+            This sampling method uses an explicit mapping from 
+            the mesh grid parametrization to the deformable surface points 
+            @params:
+                fig, ax: matplotlib figure handles to facilitate the visualization
+                plot: set to True to plot on the ax
+                flysurf: the flysurf instance
+                resolution: the number of samples to take on each boundary ridge
+                points: the positions of the actuated mass points on the flysurf
+        """
+        # collection of all samples
+        resolution = self.resolution
+        flysurf = self.flysurf
+        cell_length = flysurf.cell_length
+        yaw, t, R = estimate_yaw_transformation(np.hstack([coordinates, np.zeros((coordinates.shape[0], 1))]), points)
+
+        all_samples = []
+        num_samples = resolution ** 2
+        triangles = []
+        for i, surface in enumerate(flysurf.active_surface):
+            triangles.append([flysurf._index2coord(surface[j]) for j in range(len(surface))])
+
+        triangles = np.array(triangles)
+
+        # take samples in the mesh grid, i.e., 
+        sample_points_R2 = np.array([flysurf._index2coord(i)[::-1] for i in range(num_samples)])
+        sample_regions = find_triangles(sample_points_R2, triangles)
+
+        for i in range(num_samples):
+            uvy, uvx = np.array(flysurf._index2coord(i))*cell_length
+            triangle = triangles[sample_regions[i]]
+            key = tuple(sorted([flysurf._coord2index(triangle_vertex) for triangle_vertex in triangle]))
+            u, v = np.sqrt(uvx**2 + uvy**2), np.arctan2(uvy, uvx)
+            # print(i, (u, v))
+            params = flysurf.catenary_surface_params[key][:4]
+            # print(key, params)
+            all_samples.append(transform_points(catenary_surface(params, u, v).flatten(), yaw, t))
+
+        # assert False
+        return np.array(all_samples)
+    
+    def sampling_v3(self, fig, ax, points, coordinates, plot=False):
+        resolution = self.resolution
+        flysurf = self.flysurf
+        num_vertices = 3
+        num_samples = resolution ** 2
+        
+        # Precompute triangle data
+        active_surfaces = np.array(flysurf.active_surface)
+        triangle_coordinates = np.array([
+            [flysurf._index2coord(surface[j]) for j in range(num_vertices)]
+            for surface in active_surfaces
+        ])
+        triangle_positions = np.array([flysurf.catenary_surface_params[tuple(surface)][-1] 
+                                    for surface in active_surfaces])
+        
+        # Generate sample grid and find containing triangles
+        sample_points_R2 = np.array([flysurf._index2coord(i) for i in range(num_samples)])
+        sample_regions = find_triangles(sample_points_R2, triangle_coordinates)
+        
+        # Vectorized parameter lookup
+        triangle_keys = np.array([
+            tuple(sorted([flysurf._coord2index(vertex) for vertex in tri]))
+            for tri in triangle_coordinates
+        ])
+        all_params = np.array([flysurf.catenary_surface_params[tuple(key)][:4] for key in triangle_keys])
+        
+        # Get parameters for each sample point
+        sample_params = all_params[sample_regions]
+        
+        # Vectorized barycentric interpolation
+        A = triangle_coordinates[sample_regions].transpose(0, 2, 1)  # Shape: (num_samples, 2, 3)
+        A = np.concatenate([A, np.ones((num_samples, 1, 3))], axis=1)  # Add row of ones
+        
+        b = np.column_stack([sample_points_R2, np.ones(num_samples)])  # Shape: (num_samples, 3)
+        lambdas = np.linalg.solve(A, b[:, :, np.newaxis]).squeeze()  # Shape: (num_samples, 3)
+        
+        # Interpolate (x,y) coordinates
+        xyz = triangle_positions[sample_regions]  # Shape: (num_samples, 3, 3)
+        xy = np.einsum('ij,ijk->ik', lambdas, xyz)  # Shape: (num_samples, 3)
+        
+        # Compute z from catenoid equation
+        a, x0, y0, z0 = sample_params.T
+        r = np.sqrt((xy[:, 0] - x0)**2 + (xy[:, 1] - y0)**2)
+        z = z0 + a * np.cosh(r / a)
+        
+        # Combine results
+        all_samples = np.column_stack([xy[:, :2], z])
+
+        return all_samples
+
+    
     def smooth_particle_cloud(self, measurements, L, dt, alpha=0.5, filter_on=True):
         """
         Smooth a cloud of particle trajectories with Lipschitz continuity constraints.
@@ -1208,127 +1426,6 @@ class FlysurfSampler:
         return self.filtered_samples
 
 
-def drag_points_vectorized(A, control_indices, B, sigma, alpha=None):
-    """
-    Drag points in A based on control points and their target positions, with a per-control-point sigma.
-
-    Parameters:
-    A : ndarray of shape (n, 3)
-        The original 3D points.
-    control_indices : array-like of int
-        Indices of control points in A that are dragged.
-    B : ndarray of shape (k, 3)
-        The target positions for the control points.
-    sigma : ndarray of shape (k,)
-        Gaussian spread for each control point; smaller values make the influence more local.
-    alpha : ndarray of shape (k,), optional
-        Weight of effect for each control point. Larger values amplify the influence.
-        If None, defaults to all ones.
-
-    Returns:
-    A_new : ndarray of shape (n, 3)
-        The updated 3D points after applying the drag.
-    """
-    # Ensure sigma is a numpy array and has proper dimensions.
-    sigma = np.asarray(sigma)
-    if sigma.ndim != 1 or sigma.shape[0] != B.shape[0]:
-        raise ValueError("sigma must be a 1D array with the same length as the number of control points in B")
-    
-    # Validate alpha
-    if alpha is None:
-        alpha = np.ones(B.shape[0])
-    else:
-        alpha = np.asarray(alpha)
-        if alpha.ndim != 1 or alpha.shape[0] != B.shape[0]:
-            raise ValueError("alpha must be a 1D array with the same length as B")
-
-    # Extract control points from A and compute their displacements
-    A_control = A[control_indices]  # shape (k, 3)
-    d = B - A_control  # shape (k, 3)
-
-    # Compute differences between every point in A and each control point:
-    # diff has shape (n, k, 3)
-    diff = A[:, None, :] - A_control[None, :, :]
-
-    # Compute squared Euclidean distances, shape (n, k)
-    dist_sq = np.sum(diff ** 2, axis=2)
-
-    # Use broadcasting to compute per-control-point Gaussian weights.
-    # (sigma**2) is of shape (k,), so we add a new axis to broadcast over n.
-    weights = alpha[None, :] * np.exp(-dist_sq / (sigma ** 2)[None, :])
-
-    # Compute the weighted displacement for each point in A.
-    # weights[..., None] has shape (n, k, 1), d[None, :, :] has shape (1, k, 3)
-    weighted_disp = np.sum(weights[..., None] * d[None, :, :], axis=1)
-
-    # Normalize by the sum of weights for each point to get the average displacement.
-    weight_sum = np.sum(weights, axis=1)[:, None]
-
-    # Update A with the computed displacements.
-    A_new = A + weighted_disp / weight_sum
-
-    return A_new
-
-
-def oscillation(i):
-    return np.sin(i * np.pi / 100) * 0.05
-
-
-def Euler_distance_points(rows, cols, states):
-    states_reshaped = states.reshape((rows, cols, 3))  # Shape (9, 9, 3)
-
-    # Initialize list to store distances
-    distances = []
-
-    # Compute distances for adjacent points (right and down)
-    for i in range(rows):
-        for j in range(cols):
-            # Current point
-            current_point = states_reshaped[i, j]
-
-            # Right neighbor (if not on the last column)
-            if j < cols - 1:
-                right_point = states_reshaped[i, j + 1]
-                distance = np.linalg.norm(current_point - right_point)
-                distances.append(distance)
-
-            # Downward neighbor (if not on the last row)
-            if i < rows - 1:
-                down_point = states_reshaped[i + 1, j]
-                distance = np.linalg.norm(current_point - down_point)
-                distances.append(distance)
-
-    # Calculate the average distance
-    average_distance = np.mean(distances)
-
-    return average_distance
-
-
-def average_hausdorff_distance(points_a: np.ndarray, points_b: np.ndarray) -> float:
-    """
-    Computes the average Hausdorff distance between two sets of 3D points.
-
-    Parameters:
-        points_a (np.ndarray): An ndarray of shape (N, 3) representing the first set of 3D points.
-        points_b (np.ndarray): An ndarray of shape (M, 3) representing the second set of 3D points.
-
-    Returns:
-        float: The average Hausdorff distance between the two sets of points.
-    """
-    if points_a.shape[1] != 3 or points_b.shape[1] != 3:
-        raise ValueError("Both input arrays must have 3 columns representing 3D points.")
-
-    # Compute pairwise distances
-    d_matrix = distance.cdist(points_a, points_b)
-
-    # Compute directed distances
-    d_ab = np.mean(np.min(d_matrix, axis=1))  # Average of minimum distances from A to B
-    d_ba = np.mean(np.min(d_matrix, axis=0))  # Average of minimum distances from B to A
-
-    # Average Hausdorff distance
-    return (d_ab + d_ba) / 2
-
-
 if __name__ == "__main__":
     vel_hist = []
     vel_raw_hist = []
@@ -1343,7 +1440,7 @@ if __name__ == "__main__":
                             lower-left
                             lower-right
     """
-    mesh_size = 5  # number of samples on the outermost sides
+    mesh_size = 25  # number of samples on the outermost sides
     points_coord = np.array([[            mesh_size - 1 ,            mesh_size - 1  ],
                              [            mesh_size - 1 ,                        0  ],
                              [                        0 ,                        0  ],
@@ -1398,13 +1495,6 @@ if __name__ == "__main__":
                        [0.7, -0.4, 0.45],    # mid-mid mid-midpoints
     ])
 
-    # points = np.array([[ 0.41,   0.39,    0.15],       # 0
-    #                    [-0.38,   0.42,   -0.05],     # 1
-    #                    [-0.44,  -0.37,    0.08],      # 2
-    #                    [ 0.40,  -0.28,   -0.04],    # 3
-    #                 #    [-0.19,   0.01,     0.2],
-    #                 #    [ 0.21,  -0.02,     0.1],
-    #                    [0.04,    0.07,    -0.1]])
     flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1.0 / (mesh_size - 1), num_sample_per_curve=mesh_size)
     flysurf.update(points_coord, points)
     sampler = FlysurfSampler(flysurf, mesh_size, points, points_coord)
@@ -1419,9 +1509,9 @@ if __name__ == "__main__":
             ax.set_xlabel("X")
             ax.set_ylabel("Y")
             ax.set_zlabel("Z")
-            ax.set_xlim(-0.0, 1.0)
-            ax.set_ylim(-0.5, 0.5)
-            ax.set_zlim(-0.5, 0.5)
+            ax.set_xlim(-0.25, 1.25)
+            ax.set_ylim(-0.5, 0.75)
+            ax.set_zlim(-1.0, 1.0)
             # random_array = np.random.normal(loc=0, scale=0.001, size=points.shape)
             # points += random_array
             points[0, 2] += 0.11 * oscillation(5.0 * i)
@@ -1452,26 +1542,26 @@ if __name__ == "__main__":
             # points += np.random.normal(loc=0, scale=0.002, size=points.shape)
 
             # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
-            # time_start = time.time()
+            time_start = time.time()
             sampler.flysurf.update(points_coord, points)
-            # print("elapsed time till update:", time.time() - time_start)
-
+            print("elapsed time till update:", time.time() - time_start)
             # visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=False, num_samples=25)
 
-            all_samples = sampler.sampling_v1(fig, ax, points, coordinates=points_coord)
-            # print("elapsed time till sampling:", time.time() - time_start)
+            all_samples = sampler.sampling_v3(fig, ax, points, coordinates=points_coord)
+            print("elapsed time till sampling:", time.time() - time_start)
             vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:, 1]))
 
             filtered_points = sampler.smooth_particle_cloud(all_samples, max_speed, dt)
-            # print("total elapsed time:", time.time() - time_start)
+            print("total elapsed time:", time.time() - time_start)
             vel_hist.append(np.linalg.norm(sampler.vel[:, 1]))
 
             # Before filter
             # ax.plot(all_samples[:, 0], all_samples[:, 1], all_samples[:, 2], "*")
             #
-            unfiltered_samples_rows = all_samples.reshape((mesh_size, mesh_size, 3))
+            # unfiltered_samples_rows = all_samples.reshape((mesh_size, mesh_size, 3))
 
             # for i in range(unfiltered_samples_rows.shape[0]):
+            #     # ax.plot(unfiltered_samples_rows[i, 0:2, 0], unfiltered_samples_rows[i, 0:2, 1], unfiltered_samples_rows[i, 0:2, 2], "o-")
             #     ax.plot(unfiltered_samples_rows[i, :, 0], unfiltered_samples_rows[i, :, 1], unfiltered_samples_rows[i, :, 2], "*-")
             # plt.pause(0.0001)
 
@@ -1492,7 +1582,8 @@ if __name__ == "__main__":
               np.std(flysurf.log_surface_time))
         fig1 = plt.figure()
         ax1 = fig1.add_subplot(111)
-        ax1.plot(flysurf.log_catenary_time, "r.")
-        ax1.plot(flysurf.log_surface_time, "b.")
+        ax1.plot(flysurf.log_catenary_time, "r.", label="catenary time")
+        ax1.plot(flysurf.log_surface_time, "b.", label="surface time")
+        ax1.legend()
         plt.pause(0.0001)
         input()
