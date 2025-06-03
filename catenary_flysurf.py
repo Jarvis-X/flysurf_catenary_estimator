@@ -1240,6 +1240,74 @@ class FlysurfSampler:
         all_samples = np.column_stack([xy[:, :2], z])
 
         return all_samples
+    
+    def sampling_v3_curv(self, fig, ax, points, coordinates, plot=False):
+        """Catenoid curvature-aware sampling with edge fallback"""
+        resolution = self.resolution
+        flysurf = self.flysurf
+        num_samples = resolution ** 2
+        
+        # Precompute all triangle data
+        active_surfaces = np.array(flysurf.active_surface)
+        triangle_coords = np.array([
+            [flysurf._index2coord(surface[j]) for j in range(3)]
+            for surface in active_surfaces
+        ])
+        triangle_positions = np.array([
+            flysurf.catenary_surface_params[tuple(surface)][-1] 
+            for surface in active_surfaces
+        ])
+        
+        # Generate sample grid and find containing triangles
+        sample_points_R2 = np.array([flysurf._index2coord(i) for i in range(num_samples)])
+        tri_indices = find_triangles(sample_points_R2, triangle_coords)
+        
+        # Get parameters for each triangle
+        triangle_params = np.array([
+            flysurf.catenary_surface_params[tuple(surface)][:4]
+            for surface in active_surfaces
+        ])
+        
+        # Initialize output array
+        all_samples = np.zeros((num_samples, 3))
+        
+        # Process each unique triangle found
+        for tri_idx in np.unique(tri_indices):
+            mask = (tri_indices == tri_idx)
+            tri_points = sample_points_R2[mask]
+            tri_verts_ij = triangle_coords[tri_idx]
+            tri_verts_xyz = triangle_positions[tri_idx]
+            a, x0, y0, z0 = triangle_params[tri_idx]
+            
+            # Compute barycentric coordinates for all points in this triangle
+            A = np.column_stack([tri_verts_ij, np.ones(3)])
+            lambdas = np.linalg.solve(A.T, np.column_stack([tri_points, np.ones(len(tri_points))]).T).T
+            
+            # Initial linear interpolation (x,y)
+            xy_linear = np.dot(lambdas, tri_verts_xyz[:, :2])
+            
+            # Curvature correction - adjust (x,y) based on catenoid geometry
+            r = np.sqrt((xy_linear[:, 0] - x0)**2 + (xy_linear[:, 1] - y0)**2)
+            theta = np.arctan2(xy_linear[:, 1] - y0, xy_linear[:, 0] - x0)
+            
+            # Catenoid isothermal coordinates (u,v)
+            u = a * np.arcsinh(r / a)
+            v = theta
+            
+            # Map back to physical space with curvature correction
+            r_corrected = a * np.sinh(u / a)
+            x_corrected = x0 + r_corrected * np.cos(v)
+            y_corrected = y0 + r_corrected * np.sin(v)
+            
+            # Compute z using catenoid formula
+            z = z0 + a * np.cosh(r_corrected / a)
+            
+            # Store results
+            all_samples[mask, 0] = x_corrected
+            all_samples[mask, 1] = y_corrected
+            all_samples[mask, 2] = z
+        
+        return all_samples
 
     
     def smooth_particle_cloud(self, measurements, L, dt, alpha=0.5, filter_on=True):
@@ -1350,7 +1418,7 @@ if __name__ == "__main__":
                     #    [0.7, -0.4, 0.45],    # mid-mid mid-midpoints
     ])
 
-    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1.0 / (mesh_size - 1), num_sample_per_curve=mesh_size)
+    flysurf = CatenaryFlySurf(mesh_size, mesh_size, 2.0 / (mesh_size - 1), num_sample_per_curve=mesh_size)
     flysurf.update(points_coord, points)
     sampler = FlysurfSampler(flysurf, mesh_size, points, points_coord)
 
@@ -1394,7 +1462,7 @@ if __name__ == "__main__":
             # points[22, 2] -= 0.12 * oscillation(2.5 * i + 3)
             # points[23, 2] -= 0.10 * oscillation(3.1 * i + 1.2)
             # points[24, 2] += 0.11 * oscillation(5.1 * i + 2.0)
-            points[:, :2] += np.random.normal(loc=0, scale=0.01, size=points[:, :2].shape)
+            points[:, :2] += np.random.normal(loc=0, scale=0.005, size=points[:, :2].shape)
 
             # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
             time_start = time.time()
