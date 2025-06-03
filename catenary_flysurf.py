@@ -9,6 +9,7 @@ import time
 from scipy.optimize import root_scalar
 import matplotlib
 from scipy.spatial import distance
+from scipy.spatial.distance import cdist
 
 # matplotlib.use('tkagg')
 plt.rc('font', family='serif')
@@ -28,71 +29,6 @@ christmas_cmap = mcolors.LinearSegmentedColormap.from_list("christmas", christma
 
 """ Utility functions
 """
-def get_sample_coordinates_fast(index, sample_regions, triangle_coordinates, triangle_positions, params, flysurf):
-    i, j = flysurf._index2coord(index)
-    tri_idx = sample_regions[index]
-    tri_ij = triangle_coordinates[tri_idx]
-    tri_xyz = triangle_positions[tri_idx]
-    
-    # Barycentric interpolation
-    A = np.array([[tri_ij[0, 0], tri_ij[1, 0], tri_ij[2, 0]],
-                  [tri_ij[0, 1], tri_ij[1, 1], tri_ij[2, 1]],
-                  [1, 1, 1]])
-    b = np.array([i, j, 1])
-    lambdas = np.linalg.solve(A, b)
-    
-    x, y, _ = np.dot(lambdas, tri_xyz)
-    a, x0, y0, z0 = params
-    r = np.sqrt((x - x0)**2 + (y - y0)**2)
-    z = z0 + a * np.cosh(r / a)
-    
-    return (x, y, z)
-
-def cartesian_to_polar(x, y, x0, y0):
-    """Convert Cartesian (x,y) to polar (r, theta) relative to (x0, y0)."""
-    dx, dy = x - x0, y - y0
-    r = np.sqrt(dx**2 + dy**2)
-    theta = np.arctan2(dy, dx)
-    return r, theta
-
-def polar_to_cartesian(r, theta, x0, y0):
-    """Convert polar (r, theta) back to Cartesian (x, y)."""
-    x = x0 + r * np.cos(theta)
-    y = y0 + r * np.sin(theta)
-    return x, y
-
-def isothermal_to_polar(u, v, a):
-    """Convert isothermal coordinates (u, v) to polar (r, theta)."""
-    r = a * np.sinh(u / a)
-    theta = v
-    return r, theta
-
-def polar_to_isothermal(r, theta, a):
-    """Convert polar (r, theta) to isothermal (u, v)."""
-    u = a * np.arcsinh(r / a)
-    v = theta
-    return u, v
-
-def compute_conformal_map(triangle_ij, triangle_uv):
-    """
-    Compute the conformal map (affine transformation) from triangle in (i,j) space to (u,v) space.
-    Returns coefficients alpha, beta for the map f(i,j) = alpha*(i + 1j*j) + beta.
-    """
-    # Convert to complex numbers
-    w = triangle_ij[:, 0] + 1j * triangle_ij[:, 1]
-    f = triangle_uv[:, 0] + 1j * triangle_uv[:, 1]
-    
-    # Solve for alpha and beta in f = alpha * w + beta
-    A = np.vstack([w, np.ones_like(w)]).T
-    alpha, beta = np.linalg.lstsq(A, f, rcond=None)[0]
-    return alpha, beta
-
-def map_ij_to_uv(i, j, alpha, beta):
-    """Map grid index (i,j) to isothermal (u,v) using conformal coefficients."""
-    w = i + 1j * j
-    f = alpha * w + beta
-    return np.real(f), np.imag(f)
-
 def estimate_yaw_transformation(points1, points2):
     if points1.shape[0] == 0:
         return 0.0, np.zeros(3)
@@ -233,70 +169,91 @@ def find_all_intersections_batch(S1, S2):
     intersections = p1[:, None] + t[..., None] * d1[:, None]
     return intersections.reshape(-1, 2)
 
-def find_triangles(points, triangles):
+def find_triangles(points, triangles, tol=1e-12):
     """
-    Fully vectorized triangle finding with fallback to closest triangle.
+    Find containing triangles with fallback to closest edge.
     
     Parameters:
-    - points: Array of shape (n_points, 2)
-    - triangles: Array of shape (n_triangles, 3, 2)
-    
+        points: (n_points, 2) array of query points
+        triangles: (n_triangles, 3, 2) array of triangle vertices
+        tol: Numerical tolerance for point-in-triangle test
+        
     Returns:
-    - Array of shape (n_points,) with triangle indices
+        (n_points,) array of triangle indices
     """
     n_points = points.shape[0]
     n_triangles = triangles.shape[0]
     
-    # Precompute triangle properties
-    A = triangles[:, 0, :]  # shape (n_triangles, 2)
-    B = triangles[:, 1, :]
-    C = triangles[:, 2, :]
-    centroids = np.mean(triangles, axis=1)  # shape (n_triangles, 2)
+    # Precompute all triangle edges [AB, BC, CA] for each triangle
+    edges = np.stack([
+        triangles[:, 1] - triangles[:, 0],  # AB
+        triangles[:, 2] - triangles[:, 1],  # BC
+        triangles[:, 0] - triangles[:, 2]   # CA
+    ], axis=1)  # shape (n_triangles, 3, 2)
     
-    # Vectorized barycentric coordinate calculation
+    # Original barycentric coordinate calculation
+    A = triangles[:, 0]
+    B = triangles[:, 1]
+    C = triangles[:, 2]
+    
     denominator = ((B[:, 1] - C[:, 1]) * (A[:, 0] - C[:, 0]) + 
-                 (C[:, 0] - B[:, 0]) * (A[:, 1] - C[:, 1]))  # shape (n_triangles,)
+                 (C[:, 0] - B[:, 0]) * (A[:, 1] - C[:, 1]))
     
-    # Reshape for broadcasting (n_points, n_triangles, 2)
-    P = points[:, np.newaxis, :]  # shape (n_points, 1, 2)
-    A = A[np.newaxis, :, :]  # shape (1, n_triangles, 2)
-    B = B[np.newaxis, :, :]
-    C = C[np.newaxis, :, :]
-    
-    # Batch compute barycentric coordinates
-    u_numerator = (B[..., 1] - C[..., 1]) * (P[..., 0] - C[..., 0]) + (C[..., 0] - B[..., 0]) * (P[..., 1] - C[..., 1])
-    u = u_numerator / denominator[np.newaxis, :]
-    
-    v_numerator = (C[..., 1] - A[..., 1]) * (P[..., 0] - C[..., 0]) + (A[..., 0] - C[..., 0]) * (P[..., 1] - C[..., 1])
-    v = v_numerator / denominator[np.newaxis, :]
-    
+    P = points[:, np.newaxis, :]
+    u = ((B[:, 1] - C[:, 1]) * (P[..., 0] - C[:, 0]) + 
+        (C[:, 0] - B[:, 0]) * (P[..., 1] - C[:, 1])) / denominator
+    v = ((C[:, 1] - A[:, 1]) * (P[..., 0] - C[:, 0]) + 
+        (A[:, 0] - C[:, 0]) * (P[..., 1] - C[:, 1])) / denominator
     w = 1 - u - v
     
-    # Find containing triangles (with tolerance)
-    contains = (u >= -1e-10) & (v >= -1e-10) & (w >= -1e-10)  # shape (n_points, n_triangles)
+    contains = (u >= -tol) & (v >= -tol) & (w >= -tol)
+    tri_indices = np.argmax(contains, axis=1)
+    tri_indices[~np.any(contains, axis=1)] = -1
     
-    # For each point, get first containing triangle (or -1)
-    point_triangle_indices = np.argmax(contains, axis=1)  # Gets first True if exists
-    point_triangle_indices[~np.any(contains, axis=1)] = -1  # Mark points with no containing triangle
-    
-    # Fallback for points not in any triangle
-    if np.any(point_triangle_indices == -1):
-        missing_mask = (point_triangle_indices == -1)
-        distances = cdist(points[missing_mask], centroids)
-        closest_tris = np.argmin(distances, axis=1)
-        point_triangle_indices[missing_mask] = closest_tris
+    # Enhanced fallback: find closest edge
+    if np.any(tri_indices == -1):
+        missing_mask = (tri_indices == -1)
+        missing_points = points[missing_mask]
         
-        # Optional: Verify points are at least in bounding boxes
-        tri_verts = triangles[closest_tris]
-        x_in_bb = (points[missing_mask, 0] >= tri_verts[:, :, 0].min(axis=1)) & (points[missing_mask, 0] <= tri_verts[:, :, 0].max(axis=1))
-        y_in_bb = (points[missing_mask, 1] >= tri_verts[:, :, 1].min(axis=1)) & (points[missing_mask, 1] <= tri_verts[:, :, 1].max(axis=1))
-        outliers = missing_mask.copy()
-        outliers[missing_mask] = ~(x_in_bb & y_in_bb)
+        # Compute distance from each missing point to all edges
+        min_dists = np.full(len(missing_points), np.inf)
+        best_tri = np.full(len(missing_points), -1, dtype=int)
         
-        if np.any(outliers):
-            print(f"Warning: {np.sum(outliers)} points assigned to non-containing triangles")
-    
-    return point_triangle_indices
+        for tri_idx in range(n_triangles):
+            # Get all edges for this triangle
+            v0, v1, v2 = triangles[tri_idx]
+            edges = [
+                (v0, v1),  # AB
+                (v1, v2),  # BC
+                (v2, v0)   # CA
+            ]
+            
+            # Compute distance to each edge
+            for edge_idx, (start, end) in enumerate(edges):
+                # Vector from start to end
+                edge_vec = end - start
+                # Vector from start to point
+                point_vec = missing_points - start
+                
+                # Projection parameter (0 to 1 means on segment)
+                t = np.dot(point_vec, edge_vec) / np.dot(edge_vec, edge_vec)
+                t = np.clip(t, 0, 1)
+                
+                # Find closest point on edge
+                proj = start + t[:, np.newaxis] * edge_vec
+                
+                # Distance to edge
+                dists = np.linalg.norm(missing_points - proj, axis=1)
+                
+                # Update best match
+                better = dists < min_dists
+                min_dists[better] = dists[better]
+                best_tri[better] = tri_idx
+        
+        tri_indices[missing_mask] = best_tri
+        
+    return tri_indices
+
 
 def drag_points_vectorized(A, control_indices, B, sigma, alpha=None):
     """
@@ -450,108 +407,6 @@ def batch_surf_sampling(intersections, surf_info, flysurf):
     ]
 
     return z_vals
-
-def sample_entire_grid(n, triangle_coordinates, cartesian_coordinates, flysurf):
-    """
-    Sample all points on an n x n grid using conformal mapping.
-    
-    Args:
-        n: Grid resolution (n x n).
-        triangle_coordinates: Array of shape (num_triangles, 3, 2) of (i,j) vertices.
-        cartesian_coordinates: Array of shape (num_triangles, 3, 3) of (x,y,z) vertices.
-        flysurf: Object with _coord2index, _index2coord, and catenary_surface_params.
-    
-    Returns:
-        samples: Array of shape (n, n, 3) containing (x,y,z) for each grid point.
-        triangle_ids: Array of shape (n, n) containing which triangle each point belongs to.
-    """
-    # Initialize output arrays
-    samples = np.zeros((n, n, 3)) * np.nan
-    triangle_ids = np.zeros((n, n), dtype=int) - 1  # -1 means unassigned
-    
-    # Precompute all grid indices (0-indexed)
-    ii, jj = np.meshgrid(np.arange(n), np.arange(n), indexing='ij')
-    all_ij = np.stack([ii.ravel(), jj.ravel()], axis=1)
-    
-    # Process all triangles
-    for tri_idx in range(len(triangle_coordinates)):
-        tri_ij = triangle_coordinates[tri_idx]
-        tri_xyz = cartesian_coordinates[tri_idx]
-        
-        # Get catenoid parameters for this triangle
-        key = tuple(sorted([flysurf._coord2index(vertex) for vertex in tri_ij]))
-        try:
-            params = flysurf.catenary_surface_params[key][:4]
-        except KeyError:
-            continue  # Skip if no parameters available
-        a, x0_cat, y0_cat, z0_cat = params
-        
-        # Convert triangle corners to isothermal (u, v)
-        uv_corners = []
-        for (x, y, _) in tri_xyz:
-            r, theta = cartesian_to_polar(x, y, x0_cat, y0_cat)
-            u_iso, v_iso = polar_to_isothermal(r, theta, a)
-            uv_corners.append([u_iso, v_iso])
-        uv_corners = np.array(uv_corners)
-        
-        # Compute conformal map from (i,j) to (u,v)
-        alpha, beta = compute_conformal_map(tri_ij, uv_corners)
-        
-        # Find all grid points inside this triangle
-        A = np.array([
-            [tri_ij[0, 0], tri_ij[1, 0], tri_ij[2, 0]],
-            [tri_ij[0, 1], tri_ij[1, 1], tri_ij[2, 1]],
-            [1, 1, 1]
-        ])
-        
-        # Vectorized barycentric coordinate check
-        b = np.column_stack([all_ij.T, np.ones(len(all_ij))])
-        lambdas = np.linalg.solve(A, b.T).T
-        
-        inside = np.all(lambdas >= -1e-10, axis=1)  # Small tolerance for numerical stability
-        inside_ij = all_ij[inside]
-        
-        # Map all interior points
-        for i, j in inside_ij:
-            if triangle_ids[i, j] != -1:
-                continue  # Skip already assigned points (optional: keep first or closest)
-            
-            # Convert to Cartesian coordinates
-            u_iso, v_iso = map_ij_to_uv(i, j, alpha, beta)
-            r, theta = isothermal_to_polar(u_iso, v_iso, a)
-            x, y = polar_to_cartesian(r, theta, x0_cat, y0_cat)
-            z = z0_cat + a * np.cosh(r / a)
-            
-            samples[i, j] = [x, y, z]
-            triangle_ids[i, j] = tri_idx
-    
-    # Handle any remaining unassigned points (fallback to barycentric interpolation)
-    unassigned = np.where(triangle_ids == -1)
-    for i, j in zip(*unassigned):
-        # Find closest triangle (simplified fallback - can be improved)
-        for tri_idx in range(len(triangle_coordinates)):
-            tri_ij = triangle_coordinates[tri_idx]
-            tri_xyz = cartesian_coordinates[tri_idx]
-            
-            # Barycentric interpolation as fallback
-            A = np.array([
-                [tri_ij[0, 0], tri_ij[1, 0], tri_ij[2, 0]],
-                [tri_ij[0, 1], tri_ij[1, 1], tri_ij[2, 1]],
-                [1, 1, 1]
-            ])
-            b = np.array([i, j, 1])
-            try:
-                lambdas = np.linalg.solve(A, b)
-            except np.linalg.LinAlgError:
-                continue
-            
-            if np.all(lambdas >= -1e-10):
-                x, y, z = np.dot(lambdas, tri_xyz)
-                samples[i, j] = [x, y, z]
-                triangle_ids[i, j] = tri_idx
-                break
-    
-    return samples
 
 """ 
 Flysurf related classes
@@ -806,7 +661,7 @@ class CatenaryFlySurf:
             if key not in self.catenary_surface_params:
                 self.catenary_surface_params[key] = [0.5, 0, 0, 0, val]
             else:
-                self.catenary_surface_params[-1] = val
+                self.catenary_surface_params[key][-1] = val
             active_surface.append(key)
 
         self.active_surface = active_surface
@@ -1450,22 +1305,22 @@ if __name__ == "__main__":
                              [                        0 ,     (mesh_size - 1) // 2  ],
                              [     (mesh_size - 1) // 2 ,            mesh_size - 1  ],
                              [     (mesh_size - 1) // 2 ,                        0  ], # midpoints
-                             [            mesh_size - 1 ,     (mesh_size - 1) // 4  ], 
-                             [            mesh_size - 1 ,   (mesh_size - 1)*3 // 4  ], # top mid-midpoints
-                             [   (mesh_size - 1)*3 // 4 ,                        0  ],
-                             [   (mesh_size - 1)*3 // 4 ,     (mesh_size - 1) // 4  ],
-                             [   (mesh_size - 1)*3 // 4 ,     (mesh_size - 1) // 2  ],
-                             [   (mesh_size - 1)*3 // 4 ,   (mesh_size - 1)*3 // 4  ],
-                             [   (mesh_size - 1)*3 // 4 ,          (mesh_size - 1)  ], # top-mid mid-midpoints
-                             [     (mesh_size - 1) // 2 ,     (mesh_size - 1) // 4  ],
-                             [     (mesh_size - 1) // 2 ,   (mesh_size - 1)*3 // 4  ], # mid-mid mid-midpoints
-                             [     (mesh_size - 1) // 4 ,                        0  ],
-                             [     (mesh_size - 1) // 4 ,     (mesh_size - 1) // 4  ],
-                             [     (mesh_size - 1) // 4 ,     (mesh_size - 1) // 2  ],
-                             [     (mesh_size - 1) // 4 ,   (mesh_size - 1)*3 // 4  ],
-                             [     (mesh_size - 1) // 4 ,          (mesh_size - 1)  ], # bottom-mid mid-midpoints
-                             [                        0 ,     (mesh_size - 1) // 4  ],
-                             [                        0 ,   (mesh_size - 1)*3 // 4  ], # bottom mid-midpoints
+                            #  [            mesh_size - 1 ,     (mesh_size - 1) // 4  ], 
+                            #  [            mesh_size - 1 ,   (mesh_size - 1)*3 // 4  ], # top mid-midpoints
+                            #  [   (mesh_size - 1)*3 // 4 ,                        0  ],
+                            #  [   (mesh_size - 1)*3 // 4 ,     (mesh_size - 1) // 4  ],
+                            #  [   (mesh_size - 1)*3 // 4 ,     (mesh_size - 1) // 2  ],
+                            #  [   (mesh_size - 1)*3 // 4 ,   (mesh_size - 1)*3 // 4  ],
+                            #  [   (mesh_size - 1)*3 // 4 ,          (mesh_size - 1)  ], # top-mid mid-midpoints
+                            #  [     (mesh_size - 1) // 2 ,     (mesh_size - 1) // 4  ],
+                            #  [     (mesh_size - 1) // 2 ,   (mesh_size - 1)*3 // 4  ], # mid-mid mid-midpoints
+                            #  [     (mesh_size - 1) // 4 ,                        0  ],
+                            #  [     (mesh_size - 1) // 4 ,     (mesh_size - 1) // 4  ],
+                            #  [     (mesh_size - 1) // 4 ,     (mesh_size - 1) // 2  ],
+                            #  [     (mesh_size - 1) // 4 ,   (mesh_size - 1)*3 // 4  ],
+                            #  [     (mesh_size - 1) // 4 ,          (mesh_size - 1)  ], # bottom-mid mid-midpoints
+                            #  [                        0 ,     (mesh_size - 1) // 4  ],
+                            #  [                        0 ,   (mesh_size - 1)*3 // 4  ], # bottom mid-midpoints
     ])
 
     points = np.array([[0.9, 0.4, 0.45],
@@ -1477,22 +1332,22 @@ if __name__ == "__main__":
                        [0.5, -0.4, 0.45],
                        [0.9, 0.0, 0.45],
                        [0.1, 0.0, 0.45],    # midpoints
-                       [0.3, 0.4, 0.45],
-                       [0.7, 0.4, 0.45],    # top mid-midpoints
-                       [0.1, 0.2, 0.45],
-                       [0.3, 0.2, 0.45],
-                       [0.5, 0.2, 0.45],
-                       [0.7, 0.2, 0.45],   
-                       [0.9, 0.2, 0.45],    # top-mid mid-midpoints
-                       [0.3, 0.0, 0.45],   
-                       [0.7, 0.0, 0.45],    # mid-mid mid-midpoints
-                       [0.1, -0.2, 0.45],
-                       [0.3, -0.2, 0.45],
-                       [0.5, -0.2, 0.45],
-                       [0.7, -0.2, 0.45],   
-                       [0.9, -0.2, 0.45],   # bottom-mid mid-midpoints
-                       [0.3, -0.4, 0.45],   
-                       [0.7, -0.4, 0.45],    # mid-mid mid-midpoints
+                    #    [0.3, 0.4, 0.45],
+                    #    [0.7, 0.4, 0.45],    # top mid-midpoints
+                    #    [0.1, 0.2, 0.45],
+                    #    [0.3, 0.2, 0.45],
+                    #    [0.5, 0.2, 0.45],
+                    #    [0.7, 0.2, 0.45],   
+                    #    [0.9, 0.2, 0.45],    # top-mid mid-midpoints
+                    #    [0.3, 0.0, 0.45],   
+                    #    [0.7, 0.0, 0.45],    # mid-mid mid-midpoints
+                    #    [0.1, -0.2, 0.45],
+                    #    [0.3, -0.2, 0.45],
+                    #    [0.5, -0.2, 0.45],
+                    #    [0.7, -0.2, 0.45],   
+                    #    [0.9, -0.2, 0.45],   # bottom-mid mid-midpoints
+                    #    [0.3, -0.4, 0.45],   
+                    #    [0.7, -0.4, 0.45],    # mid-mid mid-midpoints
     ])
 
     flysurf = CatenaryFlySurf(mesh_size, mesh_size, 1.0 / (mesh_size - 1), num_sample_per_curve=mesh_size)
@@ -1523,23 +1378,23 @@ if __name__ == "__main__":
             points[6, 2] += 0.11 * oscillation(5.1 * i + 2.0)
             points[7, 2] -= 0.09 * oscillation(0.9 * i - 0.5)
             points[8, 2] += 0.11 * oscillation(4.1 * i - 1.1)
-            points[9, 2] += 0.11 * oscillation(5.0 * i)
-            points[10, 2] += 0.12 * oscillation(7.0 * i + 1)
-            points[11, 2] -= 0.11 * oscillation(8.0 * i + 1.74)
-            points[12, 2] += 0.09 * oscillation(6.0 * i + 4.1)
-            points[13, 2] -= 0.12 * oscillation(2.5 * i + 3)
-            points[14, 2] -= 0.10 * oscillation(3.1 * i + 1.2)
-            points[15, 2] += 0.11 * oscillation(5.1 * i + 2.0)
-            points[16, 2] -= 0.09 * oscillation(0.9 * i - 0.5)
-            points[17, 2] += 0.11 * oscillation(4.1 * i - 1.1)
-            points[18, 2] += 0.11 * oscillation(5.0 * i)
-            points[19, 2] += 0.12 * oscillation(7.0 * i + 1)
-            points[10, 2] -= 0.11 * oscillation(8.0 * i + 1.74)
-            points[21, 2] += 0.09 * oscillation(6.0 * i + 4.1)
-            points[22, 2] -= 0.12 * oscillation(2.5 * i + 3)
-            points[23, 2] -= 0.10 * oscillation(3.1 * i + 1.2)
-            points[24, 2] += 0.11 * oscillation(5.1 * i + 2.0)
-            # points += np.random.normal(loc=0, scale=0.002, size=points.shape)
+            # points[9, 2] += 0.11 * oscillation(5.0 * i)
+            # points[10, 2] += 0.12 * oscillation(7.0 * i + 1)
+            # points[11, 2] -= 0.11 * oscillation(8.0 * i + 1.74)
+            # points[12, 2] += 0.09 * oscillation(6.0 * i + 4.1)
+            # points[13, 2] -= 0.12 * oscillation(2.5 * i + 3)
+            # points[14, 2] -= 0.10 * oscillation(3.1 * i + 1.2)
+            # points[15, 2] += 0.11 * oscillation(5.1 * i + 2.0)
+            # points[16, 2] -= 0.09 * oscillation(0.9 * i - 0.5)
+            # points[17, 2] += 0.11 * oscillation(4.1 * i - 1.1)
+            # points[18, 2] += 0.11 * oscillation(5.0 * i)
+            # points[19, 2] += 0.12 * oscillation(7.0 * i + 1)
+            # points[10, 2] -= 0.11 * oscillation(8.0 * i + 1.74)
+            # points[21, 2] += 0.09 * oscillation(6.0 * i + 4.1)
+            # points[22, 2] -= 0.12 * oscillation(2.5 * i + 3)
+            # points[23, 2] -= 0.10 * oscillation(3.1 * i + 1.2)
+            # points[24, 2] += 0.11 * oscillation(5.1 * i + 2.0)
+            points[:, :2] += np.random.normal(loc=0, scale=0.01, size=points[:, :2].shape)
 
             # ax.view_init(elev=45+15*np.cos(i/17), azim=60+0.45*i)
             time_start = time.time()
