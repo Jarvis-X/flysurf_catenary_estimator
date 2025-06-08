@@ -1259,8 +1259,8 @@ class FlysurfSampler:
         ])
         
         # Generate sample grid and find containing triangles
-        sample_points_R2 = np.array([flysurf._index2coord(i) for i in range(num_samples)])
-        tri_indices = find_triangles(sample_points_R2, triangle_coords)
+        sample_ij = np.array([flysurf._index2coord(i) for i in range(num_samples)])
+        tri_indices = find_triangles(sample_ij, triangle_coords)
         
         # Get parameters for each triangle
         triangle_params = np.array([
@@ -1274,38 +1274,42 @@ class FlysurfSampler:
         # Process each unique triangle found
         for tri_idx in np.unique(tri_indices):
             mask = (tri_indices == tri_idx)
-            tri_points = sample_points_R2[mask]
-            tri_verts_ij = triangle_coords[tri_idx]
-            tri_verts_xyz = triangle_positions[tri_idx]
-            a, x0, y0, z0 = triangle_params[tri_idx]
+            ij_points = sample_ij[mask]
+            tri_ij = triangle_coords[tri_idx]
+            tri_xyz = triangle_positions[tri_idx]
+            a, x0, y0, z0 = flysurf.catenary_surface_params[tuple(active_surfaces[tri_idx])][:4]
             
-            # Compute barycentric coordinates for all points in this triangle
-            A = np.column_stack([tri_verts_ij, np.ones(3)])
-            lambdas = np.linalg.solve(A.T, np.column_stack([tri_points, np.ones(len(tri_points))]).T).T
+            # Compute barycentric coordinates in grid space (i,j)
+            A = np.column_stack([tri_ij, np.ones(3)])
+            lambdas = np.linalg.solve(A.T, np.column_stack([ij_points, np.ones(len(ij_points))]).T).T
             
-            # Initial linear interpolation (x,y)
-            xy_linear = np.dot(lambdas, tri_verts_xyz[:, :2])
+            # Get reference points in Cartesian space
+            P0, P1, P2 = tri_xyz[:, :2]
             
-            # Curvature correction - adjust (x,y) based on catenoid geometry
-            r = np.sqrt((xy_linear[:, 0] - x0)**2 + (xy_linear[:, 1] - y0)**2)
-            theta = np.arctan2(xy_linear[:, 1] - y0, xy_linear[:, 0] - x0)
+            # Catenoid-aware mapping (key improvement)
+            # 1. Compute conformal coordinates (u,v) for triangle vertices
+            r_verts = np.array([np.sqrt((P[0]-x0)**2 + (P[1]-y0)**2) for P in [P0, P1, P2]])
+            u_verts = a * np.arcsinh(r_verts / a)
+            v_verts = np.array([np.arctan2(P[1]-y0, P[0]-x0) for P in [P0, P1, P2]])
+ 
+            # 2. Interpolate in conformal space
+            x_flat = lambdas.dot(u_verts * np.cos(v_verts))
+            y_flat = lambdas.dot(u_verts * np.sin(v_verts))
+
+            # Then convert to conformal coordinates with curvature correction
+            u_samples = np.sqrt(x_flat**2 + y_flat**2)
+            v_samples = np.arctan2(y_flat, x_flat)
             
-            # Catenoid isothermal coordinates (u,v)
-            u = a * np.arcsinh(r / a)
-            v = theta
-            
-            # Map back to physical space with curvature correction
-            r_corrected = a * np.sinh(u / a)
-            x_corrected = x0 + r_corrected * np.cos(v)
-            y_corrected = y0 + r_corrected * np.sin(v)
-            
-            # Compute z using catenoid formula
-            z = z0 + a * np.cosh(r_corrected / a)
+            # 3. Map back to physical space with curvature
+            r_samples = a * np.sinh(u_samples / a)
+            x_samples = x0 + r_samples * np.cos(v_samples)
+            y_samples = y0 + r_samples * np.sin(v_samples)
+            z_samples = z0 + a * np.cosh(r_samples / a)
             
             # Store results
-            all_samples[mask, 0] = x_corrected
-            all_samples[mask, 1] = y_corrected
-            all_samples[mask, 2] = z
+            all_samples[mask, 0] = x_samples
+            all_samples[mask, 1] = y_samples
+            all_samples[mask, 2] = z_samples
         
         return all_samples
 
