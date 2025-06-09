@@ -1191,7 +1191,7 @@ class FlysurfSampler:
         # assert False
         return np.array(all_samples)
     
-    def sampling_v3(self, fig, ax, points, coordinates, plot=False):
+    def sampling_v3_curv(self, fig, ax, points, coordinates, plot=False):
         resolution = self.resolution
         flysurf = self.flysurf
         num_vertices = 3
@@ -1241,7 +1241,7 @@ class FlysurfSampler:
 
         return all_samples
     
-    def sampling_v3_curv(self, fig, ax, points, coordinates, plot=False):
+    def sampling_v3_curv_not_good(self, fig, ax, points, coordinates, plot=False):
         """Catenoid curvature-aware sampling with edge fallback"""
         resolution = self.resolution
         flysurf = self.flysurf
@@ -1279,32 +1279,37 @@ class FlysurfSampler:
             tri_xyz = triangle_positions[tri_idx]
             a, x0, y0, z0 = flysurf.catenary_surface_params[tuple(active_surfaces[tri_idx])][:4]
             
-            # Compute barycentric coordinates in grid space (i,j)
+            # Compute barycentric coordinates in grid space (i,j) 
+            #FIXME: it is problematic when the sample is away from the centroid and the vertices
+            # because (i, j) grid space is not isometric to the embedded Euclidean space of the catenoid
             A = np.column_stack([tri_ij, np.ones(3)])
             lambdas = np.linalg.solve(A.T, np.column_stack([ij_points, np.ones(len(ij_points))]).T).T
             
-            # Get reference points in Cartesian space
+            # Get vertices in Cartesian space
             P0, P1, P2 = tri_xyz[:, :2]
             
-            # Catenoid-aware mapping (key improvement)
-            # 1. Compute conformal coordinates (u,v) for triangle vertices
-            r_verts = np.array([np.sqrt((P[0]-x0)**2 + (P[1]-y0)**2) for P in [P0, P1, P2]])
-            u_verts = a * np.arcsinh(r_verts / a)
-            v_verts = np.array([np.arctan2(P[1]-y0, P[0]-x0) for P in [P0, P1, P2]])
+            # Catenoid-aware mapping
+            # 1. Compute conformal coordinates (s, theta) for triangle vertices (curve lengths, azimuthal angle) from the lowest point
+            rs = np.array([np.sqrt((P[0]-x0)**2 + (P[1]-y0)**2) for P in [P0, P1, P2]])
+            ss = a * np.sinh(rs / a)
+            # ss = np.array([np.sqrt((P[2] - z0)**2 - a**2) for P in [P0, P1, P2] ] )
+            ts = np.array([np.arctan2(P[1]-y0, P[0]-x0) for P in [P0, P1, P2]])
  
-            # 2. Interpolate in conformal space
-            x_flat = lambdas.dot(u_verts * np.cos(v_verts))
-            y_flat = lambdas.dot(u_verts * np.sin(v_verts))
+            # 2. Interpolate in eclidean space intrinsic to the catenoid (x, y)
+            us = ss * np.cos(ts)
+            vs = ss * np.sin(ts)
+            uavg = lambdas.dot(us)
+            vavg = lambdas.dot(vs)
 
-            # Then convert to conformal coordinates with curvature correction
-            u_samples = np.sqrt(x_flat**2 + y_flat**2)
-            v_samples = np.arctan2(y_flat, x_flat)
+            # Then convert back to conformal coordinates
+            savg = np.sqrt(uavg**2 + vavg**2)
+            tavg = np.arctan2(vavg, uavg)
             
-            # 3. Map back to physical space with curvature
-            r_samples = a * np.sinh(u_samples / a)
-            x_samples = x0 + r_samples * np.cos(v_samples)
-            y_samples = y0 + r_samples * np.sin(v_samples)
-            z_samples = z0 + a * np.cosh(r_samples / a)
+            # 3. Map back to physical space
+            ravg = a * np.arcsinh(savg / a)
+            x_samples = x0 + ravg * np.cos(tavg)
+            y_samples = y0 + ravg * np.sin(tavg)
+            z_samples = z0 + np.sqrt(a**2 + savg**2) # z0 + a * np.cosh(ravg / a)
             
             # Store results
             all_samples[mask, 0] = x_samples
@@ -1474,7 +1479,7 @@ if __name__ == "__main__":
             print("elapsed time till update:", time.time() - time_start)
             # visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=False, num_samples=25)
 
-            all_samples = sampler.sampling_v3(fig, ax, points, coordinates=points_coord)
+            all_samples = sampler.sampling_v3_curv(fig, ax, points, coordinates=points_coord)
             print("elapsed time till sampling:", time.time() - time_start)
             vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:, 1]))
 
