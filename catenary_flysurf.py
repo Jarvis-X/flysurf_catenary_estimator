@@ -963,7 +963,7 @@ class FlysurfSampler:
         if points is None:
             self.filtered_samples = np.zeros((resolution ** 2, 3))
         else:
-            self.filtered_samples = self.sampling_v3(None, None, points, coordinates)
+            self.filtered_samples = self.sampling_v3_curv(None, None, points, coordinates)
         self.vel = np.zeros((resolution ** 2, 3))
 
     def sampling_v1(self, fig, ax, points, coordinates, plot=False):
@@ -1278,38 +1278,55 @@ class FlysurfSampler:
             tri_ij = triangle_coords[tri_idx]
             tri_xyz = triangle_positions[tri_idx]
             a, x0, y0, z0 = flysurf.catenary_surface_params[tuple(active_surfaces[tri_idx])][:4]
-            
-            # Compute barycentric coordinates in grid space (i,j) 
-            #FIXME: it is problematic when the sample is away from the centroid and the vertices
-            # because (i, j) grid space is not isometric to the embedded Euclidean space of the catenoid
-            A = np.column_stack([tri_ij, np.ones(3)])
-            lambdas = np.linalg.solve(A.T, np.column_stack([ij_points, np.ones(len(ij_points))]).T).T
-            
-            # Get vertices in Cartesian space
-            P0, P1, P2 = tri_xyz[:, :2]
-            
-            # Catenoid-aware mapping
-            # 1. Compute conformal coordinates (s, theta) for triangle vertices (curve lengths, azimuthal angle) from the lowest point
-            rs = np.array([np.sqrt((P[0]-x0)**2 + (P[1]-y0)**2) for P in [P0, P1, P2]])
-            ss = a * np.sinh(rs / a)
-            # ss = np.array([np.sqrt((P[2] - z0)**2 - a**2) for P in [P0, P1, P2] ] )
-            ts = np.array([np.arctan2(P[1]-y0, P[0]-x0) for P in [P0, P1, P2]])
- 
-            # 2. Interpolate in eclidean space intrinsic to the catenoid (x, y)
-            us = ss * np.cos(ts)
-            vs = ss * np.sin(ts)
-            uavg = lambdas.dot(us)
-            vavg = lambdas.dot(vs)
 
-            # Then convert back to conformal coordinates
-            savg = np.sqrt(uavg**2 + vavg**2)
-            tavg = np.arctan2(vavg, uavg)
-            
-            # 3. Map back to physical space
-            ravg = a * np.arcsinh(savg / a)
-            x_samples = x0 + ravg * np.cos(tavg)
-            y_samples = y0 + ravg * np.sin(tavg)
-            z_samples = z0 + np.sqrt(a**2 + savg**2) # z0 + a * np.cosh(ravg / a)
+            # Step 1: Compute intrinsic (u,v) coordinates for vertices
+            us, vs = [], []
+            for P in tri_xyz:
+                # Extract x,y,z from vertex
+                x, y, z = P[0], P[1], P[2]
+                
+                # Compute radial distance and angle
+                r = np.sqrt((x - x0)**2 + (y - y0)**2)
+                theta = np.arctan2(y - y0, x - x0)
+                
+                # Compute arc length parameter
+                s = a * np.sinh(r / a)
+                
+                # Convert to Cartesian in intrinsic plane
+                us.append(s * np.cos(theta))
+                vs.append(s * np.sin(theta))
+
+            dst_uv = np.column_stack((us, vs))  # Destination (u,v) points (3x2)
+
+            # Step 2: Compute affine transformation from (i,j) to (u,v)
+            A = np.column_stack((tri_ij, np.ones(3)))  # Source matrix (3x3)
+
+            # Solve for transformation coefficients
+            try:
+                # For u-component: [i, j, 1] @ [c0, c1, c2] = u
+                coeffs_u = np.linalg.solve(A, dst_uv[:, 0])
+                
+                # For v-component: [i, j, 1] @ [d0, d1, d2] = v
+                coeffs_v = np.linalg.solve(A, dst_uv[:, 1])
+            except np.linalg.LinAlgError:
+                # Fallback: Use centroid if degenerate triangle
+                centroid_uv = np.mean(dst_uv, axis=0)
+                u_samples = np.full(len(ij_points), centroid_uv[0])
+                v_samples = np.full(len(ij_points), centroid_uv[1])
+            else:
+                # Step 3: Map sample points to (u,v) space
+                A_samples = np.column_stack((ij_points, np.ones(len(ij_points))))  # (n x 3)
+                u_samples = A_samples @ coeffs_u
+                v_samples = A_samples @ coeffs_v
+
+            # Step 4: Convert (u,v) to 3D coordinates on catenoid
+            s_samples = np.sqrt(u_samples**2 + v_samples**2)
+            r_samples = a * np.arcsinh(s_samples / a)
+            theta_samples = np.arctan2(v_samples, u_samples)
+
+            x_samples = x0 + r_samples * np.cos(theta_samples)
+            y_samples = y0 + r_samples * np.sin(theta_samples)
+            z_samples = z0 + np.sqrt(a**2 + s_samples**2)
             
             # Store results
             all_samples[mask, 0] = x_samples
@@ -1479,7 +1496,7 @@ if __name__ == "__main__":
             print("elapsed time till update:", time.time() - time_start)
             # visualize(fig, ax, flysurf, plot_dot=False, plot_curve=True, plot_surface=False, num_samples=25)
 
-            all_samples = sampler.sampling_v3_curv(fig, ax, points, coordinates=points_coord)
+            all_samples = sampler.sampling_v3_curv_not_good(fig, ax, points, coordinates=points_coord)
             print("elapsed time till sampling:", time.time() - time_start)
             vel_raw_hist.append(np.linalg.norm((all_samples - sampler.filtered_samples)[:, 1]))
 
